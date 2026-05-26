@@ -1,7 +1,29 @@
 # Eye of Horus — Progress Log
 
 ## Latest Update
-**2026-05-26 — Production-ready: all demo seed data cleared, all pages now fully DB-driven.**
+**2026-05-26 — Production URL corrected, RLS recursion fixed, session persistence added.**
+
+### What was done this session
+- **Correct production URL identified:** `https://eye-of-horus-2point0-alpha.vercel.app` (mineshwp personal Vercel account, auto-deploys from GitHub). The `wetpaint` team Vercel project (`eye-of-horus-2point0.vercel.app`) is stale and should be deleted.
+- **`APP_URL` must be updated** in the mineshwp Vercel project env vars to `https://eye-of-horus-2point0-alpha.vercel.app`
+- **SignIn.tsx** — removed hardcoded demo credentials (mia.patel@wetpaint.co.za / Horus_2026). Fields now start empty.
+- **SignIn.tsx** — removed hardcoded client names from preview-tease (Tarsus, Acme, Gentech). Replaced with generic feature description.
+- **`supabase/migrations/20260526000000_clear_seed_data.sql`** — run in Supabase SQL Editor to clear demo data ✅
+- **`supabase/migrations/20260526100000_fix_rls_recursion.sql`** — fixes infinite recursion in RLS policies. Created `get_my_role()` SECURITY DEFINER function. Run in Supabase SQL Editor.
+- **`lib/supabase.ts`** — added `persistSession: true`, `autoRefreshToken: true`, `detectSessionInUrl: true` to Supabase client config.
+- **`app/(dashboard)/admin/clients/page.tsx`** — added `getUser()` session check before client insert to surface session errors clearly.
+- **`.npmrc`** — added `playwright_skip_browser_download=1` to prevent Playwright browser download during Vercel build.
+- **`vercel.json`** — added `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` env var (belt-and-suspenders alongside .npmrc).
+- Super admin profile created in Supabase for minesh@wetpaint.co.za with role=super_admin, status=active.
+
+### Pending
+- Run `20260526100000_fix_rls_recursion.sql` in Supabase SQL Editor if not done yet.
+- Update `APP_URL` env var in mineshwp Vercel project dashboard to `https://eye-of-horus-2point0-alpha.vercel.app`.
+- Delete stale `wetpaint` team Vercel project to avoid confusion.
+
+---
+
+**Previous: 2026-05-26 — Production-ready: all demo seed data cleared, all pages now fully DB-driven.**
 
 ### What was done this session
 - Created migration `20260526000000_clear_seed_data.sql` — deletes all demo seed data (Acme Finance, Tarsus, Greenfield, etc.) from `sites`, `issues`, `wp_updates`, `clients`, `activities`. User will add their real clients.
@@ -42,7 +64,7 @@ Live — Awaiting Third-Party Credentials
 ---
 
 ## Current Status
-**Platform is fully deployed and all database migrations are applied.** The app loads and runs at `https://eye-of-horus-2point0.vercel.app`. Core monitoring, dashboard, site checks, and issue tracking all work. AI, email, and analytics features are built and wired but will return graceful fallbacks until their API keys are added to Vercel.
+**Platform is fully deployed and all database migrations are applied.** The app loads and runs at `https://eye-of-horus-2point0-alpha.vercel.app` (mineshwp Vercel account, auto-deploys from GitHub pushes). Core monitoring, dashboard, site checks, and issue tracking all work. AI, email, and analytics features are built and wired but will return graceful fallbacks until their API keys are added to Vercel.
 
 Routes live (38 total):
 - Phases 1–3: Foundation, monitoring, WordPress plugin
