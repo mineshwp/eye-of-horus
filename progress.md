@@ -1,7 +1,35 @@
 # Eye of Horus — Progress Log
 
 ## Latest Update
-**2026-05-26 — Production URL corrected, RLS recursion fixed, session persistence added.**
+**2026-05-26 — Full QA pass: auth added to all API routes, bugs fixed, build clean.**
+
+### What was done this session (QA)
+- **`lib/auth/index.ts`** — added `getApiUser(request)` (server-side JWT validation via Supabase anon client), `unauthorizedResponse()`, and `apiFetch()` (client-side fetch wrapper that attaches Bearer token from Supabase session).
+- **All ~20 internal API routes now require auth** — `getApiUser` + `unauthorizedResponse` added to every handler that was previously unauthenticated:
+  - `POST /api/checks/run`
+  - `GET + POST /api/sites/[id]/key`
+  - `GET /api/analytics/snapshot`, `POST /api/analytics/refresh`, `GET + POST /api/analytics/integrations`
+  - `POST /api/ai/summary`, `/chat`, `/issue`, `/competitor`, `/marketing-strategy`, `/seo-brief`, `/blog-ideas`
+  - `POST /api/alerts/send`, `GET /api/alerts/logs`, `GET + POST /api/alerts/settings`
+  - `POST /api/reports/generate`, `GET /api/reports/list`
+  - `GET /api/playwright/checks`, `POST /api/playwright/baseline`
+- **`GET /api/analytics/integrations`** — select changed from `*` to exclude `clarity_api_key` from response (prevents API key exposure).
+- **`app/api/playwright/baseline`** — path traversal fix: `screenshotUrl` now validated against `public/playwright-data/` using `path.resolve()` before any filesystem access.
+- **`app/api/wordpress/route.ts`** — `last_scan` was being set to the string `"Just now"` instead of `new Date().toISOString()`. Fixed.
+- **`app/api/ai/chat/route.ts`** — removed dynamic `await import('@anthropic-ai/sdk')` inside handler; replaced with static top-level import.
+- **Cron routes hardened** — both `/api/cron/daily` and `/api/cron/monthly` now return 401 when `CRON_SECRET` is missing (previously just warned and proceeded).
+- **`.npmrc`** — removed `playwright_skip_browser_download=1` (invalid npm config key that caused npm warnings). The env var is already set correctly in `vercel.json`.
+- **All frontend fetch calls** — replaced with `apiFetch` in: `context/AppContext.tsx`, `settings/page.tsx`, `sites/[id]/page.tsx`, `reports/page.tsx`, `issues/[id]/page.tsx`.
+- Build passes cleanly: 35 routes, 0 TypeScript errors, 0 warnings.
+
+### Pending
+- Run `20260526100000_fix_rls_recursion.sql` in Supabase SQL Editor if not done yet.
+- Update `APP_URL` env var in mineshwp Vercel project dashboard to `https://eye-of-horus-2point0-alpha.vercel.app`.
+- Delete stale `wetpaint` team Vercel project to avoid confusion.
+
+---
+
+**Previous: 2026-05-26 — Production URL corrected, RLS recursion fixed, session persistence added.**
 
 ### What was done this session
 - **Correct production URL identified:** `https://eye-of-horus-2point0-alpha.vercel.app` (mineshwp personal Vercel account, auto-deploys from GitHub). The `wetpaint` team Vercel project (`eye-of-horus-2point0.vercel.app`) is stale and should be deleted.

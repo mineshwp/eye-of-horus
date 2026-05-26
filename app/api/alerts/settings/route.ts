@@ -1,15 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAlertSettings, updateAlertSettings } from '@/lib/notifications/alerts';
+import { getApiUser, unauthorizedResponse } from '@/lib/auth/index';
 
 export const runtime = 'nodejs';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const user = await getApiUser(request);
+  if (!user) return unauthorizedResponse();
+
   const settings = await getAlertSettings();
   if (!settings) return NextResponse.json({ settings: null, reason: 'Supabase not configured' });
   return NextResponse.json({ settings });
 }
 
 export async function POST(request: NextRequest) {
+  const user = await getApiUser(request);
+  if (!user) return unauthorizedResponse();
+
   const body = await request.json().catch(() => ({}));
   const {
     emailRecipients,

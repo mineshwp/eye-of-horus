@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { getApiUser, unauthorizedResponse } from '@/lib/auth/index';
 
 export const runtime = 'nodejs';
 
 export async function GET(request: NextRequest) {
+  const user = await getApiUser(request);
+  if (!user) return unauthorizedResponse();
+
   const siteId = request.nextUrl.searchParams.get('siteId');
   if (!siteId) return NextResponse.json({ error: 'siteId required' }, { status: 400 });
 
@@ -14,13 +18,16 @@ export async function GET(request: NextRequest) {
   const supabase = createClient(supabaseUrl, supabaseKey);
   const { data } = await supabase
     .from('site_integrations')
-    .select('*')
+    .select('ga_property_id, gsc_site_url, clarity_project_id, updated_at')
     .eq('site_id', siteId)
     .single();
   return NextResponse.json({ integration: data ?? null });
 }
 
 export async function POST(request: NextRequest) {
+  const user = await getApiUser(request);
+  if (!user) return unauthorizedResponse();
+
   const body = await request.json().catch(() => null);
   const { siteId, gaPropertyId, gscSiteUrl, clarityProjectId, clarityApiKey } = body || {};
 

@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import Anthropic from '@anthropic-ai/sdk';
 import { isAIConfigured } from '@/lib/ai/claude';
+import { getApiUser, unauthorizedResponse } from '@/lib/auth/index';
 
 export const runtime = 'nodejs';
 export const maxDuration = 30;
 
 export async function POST(request: NextRequest) {
+  const user = await getApiUser(request);
+  if (!user) return unauthorizedResponse();
+
   const body = await request.json().catch(() => ({}));
   const { siteId, question, history } = body as {
     siteId?: string;
@@ -77,7 +82,6 @@ Be direct, specific, and actionable. If asked something outside your data, say s
 SITE CONTEXT:
 ${contextBlock}`;
 
-  const Anthropic = (await import('@anthropic-ai/sdk')).default;
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
   const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [

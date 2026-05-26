@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useApp } from "@/context/AppContext";
+import { apiFetch } from "@/lib/auth/index";
 import {
   Icon,
   Badge,
@@ -38,7 +39,7 @@ export default function ReportsPage() {
   }, [sites, selectedSiteId]);
 
   const fetchReports = useCallback(async () => {
-    const res = await fetch("/api/reports/list?limit=20").catch(() => null);
+    const res = await apiFetch("/api/reports/list?limit=20").catch(() => null);
     if (res?.ok) {
       const data = await res.json();
       setGeneratedReports(data.reports || []);
@@ -57,7 +58,7 @@ export default function ReportsPage() {
     setGenerateError(null);
     const site = sites.find((s) => s.id === selectedSiteId) || sites[0];
     try {
-      const res = await fetch("/api/reports/generate", {
+      const res = await apiFetch("/api/reports/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ siteId: site.id, reportType: "monthly" }),

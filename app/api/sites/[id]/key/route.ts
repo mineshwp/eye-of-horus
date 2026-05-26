@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { randomBytes } from "crypto";
+import { getApiUser, unauthorizedResponse } from "@/lib/auth/index";
 
 function getServerClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
@@ -9,7 +10,10 @@ function getServerClient() {
 }
 
 // POST /api/sites/[id]/key — generate a new API key for a site
-export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const user = await getApiUser(req);
+  if (!user) return unauthorizedResponse();
+
   const { id: siteId } = await params;
   const supabase = getServerClient();
 
@@ -28,7 +32,10 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
 }
 
 // GET /api/sites/[id]/key — check if a key exists (returns masked key)
-export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const user = await getApiUser(req);
+  if (!user) return unauthorizedResponse();
+
   const { id: siteId } = await params;
   const supabase = getServerClient();
 

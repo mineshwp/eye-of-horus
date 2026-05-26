@@ -3,11 +3,15 @@ import { createClient } from '@supabase/supabase-js';
 import { fetchGAMetrics } from '@/lib/analytics/google-analytics';
 import { fetchGSCMetrics } from '@/lib/analytics/search-console';
 import { fetchClarityMetrics } from '@/lib/analytics/clarity';
+import { getApiUser, unauthorizedResponse } from '@/lib/auth/index';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 export async function POST(request: NextRequest) {
+  const user = await getApiUser(request);
+  if (!user) return unauthorizedResponse();
+
   const body = await request.json().catch(() => ({}));
   const { siteId } = body as { siteId?: string };
 

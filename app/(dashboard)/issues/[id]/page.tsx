@@ -4,6 +4,7 @@ import React, { useState, useEffect, use, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useApp } from "@/context/AppContext";
 import { supabase } from "@/lib/supabase";
+import { apiFetch } from "@/lib/auth/index";
 import {
   Icon,
   Badge,
@@ -86,7 +87,7 @@ export default function IssueDetailPage({ params }: PageProps) {
       if (!issueId || !site?.id) return;
       setAiLoading(true);
       try {
-        const res = await fetch("/api/ai/issue", {
+        const res = await apiFetch("/api/ai/issue", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ issueId, siteId: site.id }),

@@ -4,6 +4,7 @@ import React, { useState, useRef, useEffect, use, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useApp, Site, Issue, WpUpdate } from "@/context/AppContext";
 import { supabase } from "@/lib/supabase";
+import { apiFetch } from "@/lib/auth/index";
 import {
   Icon,
   Badge,
@@ -133,7 +134,7 @@ export default function SiteDetailPage({ params }: PageProps) {
       .single();
     if (data) setWpSnapshot(data as WpSnapshot);
 
-    const res = await fetch(`/api/sites/${site.id}/key`);
+    const res = await apiFetch(`/api/sites/${site.id}/key`);
     if (res.ok) {
       const json = await res.json();
       setWpKeyMasked(json.has_key ? json.masked_key : null);
@@ -144,7 +145,7 @@ export default function SiteDetailPage({ params }: PageProps) {
     setWpKeyGenerating(true);
     setNewlyGeneratedKey(null);
     try {
-      const res = await fetch(`/api/sites/${site.id}/key`, { method: "POST" });
+      const res = await apiFetch(`/api/sites/${site.id}/key`, { method: "POST" });
       if (res.ok) {
         const json = await res.json();
         setNewlyGeneratedKey(json.api_key);
@@ -157,7 +158,7 @@ export default function SiteDetailPage({ params }: PageProps) {
 
   const fetchAnalyticsSnapshot = useCallback(async () => {
     if (!site?.id) return;
-    const res = await fetch(`/api/analytics/snapshot?siteId=${site.id}`).catch(() => null);
+    const res = await apiFetch(`/api/analytics/snapshot?siteId=${site.id}`).catch(() => null);
     if (res?.ok) {
       const data = await res.json();
       setAnalyticsSnapshot(data);
@@ -167,7 +168,7 @@ export default function SiteDetailPage({ params }: PageProps) {
   const refreshAnalytics = useCallback(async () => {
     if (!site?.id) return;
     setAnalyticsRefreshing(true);
-    await fetch('/api/analytics/refresh', {
+    await apiFetch('/api/analytics/refresh', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ siteId: site.id }),
@@ -180,7 +181,7 @@ export default function SiteDetailPage({ params }: PageProps) {
   const fetchAiSummary = useCallback(async () => {
     if (!site?.id) return;
     setAiSummaryLoading(true);
-    const res = await fetch('/api/ai/summary', {
+    const res = await apiFetch('/api/ai/summary', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ siteId: site.id }),
@@ -198,7 +199,7 @@ export default function SiteDetailPage({ params }: PageProps) {
     setChatInput('');
     setChatMessages((prev) => [...prev, { role: 'user', content: userMsg }]);
     setChatLoading(true);
-    const res = await fetch('/api/ai/chat', {
+    const res = await apiFetch('/api/ai/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1672,7 +1673,7 @@ const SeoTab = ({
     setBrief(null);
     setBriefLoading(true);
     try {
-      const res = await fetch('/api/ai/seo-brief', {
+      const res = await apiFetch('/api/ai/seo-brief', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2056,7 +2057,7 @@ const MarketingTab = ({
     if (!site?.id || strategyLoading) return;
     setStrategyLoading(true);
     try {
-      const res = await fetch('/api/ai/marketing-strategy', {
+      const res = await apiFetch('/api/ai/marketing-strategy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ siteId: site.id }),
@@ -2074,7 +2075,7 @@ const MarketingTab = ({
     if (!site?.id || blogLoading) return;
     setBlogLoading(true);
     try {
-      const res = await fetch('/api/ai/blog-ideas', {
+      const res = await apiFetch('/api/ai/blog-ideas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ siteId: site.id }),
@@ -2092,7 +2093,7 @@ const MarketingTab = ({
     if (!site?.id || !competitorUrl.trim() || competitorLoading) return;
     setCompetitorLoading(true);
     try {
-      const res = await fetch('/api/ai/competitor', {
+      const res = await apiFetch('/api/ai/competitor', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ siteId: site.id, competitorUrl: competitorUrl.trim() }),
@@ -2890,7 +2891,7 @@ function HistoryTab({ site }: { site: Site }) {
   const [approveSuccess, setApproveSuccess] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`/api/playwright/checks?siteId=${site.id}&limit=30`)
+    apiFetch(`/api/playwright/checks?siteId=${site.id}&limit=30`)
       .then((r) => r.json())
       .then((data) => setChecks(data.checks || []))
       .catch(() => setChecks([]))
@@ -2904,7 +2905,7 @@ function HistoryTab({ site }: { site: Site }) {
     if (!check.screenshot_url) return;
     setApprovingId(check.id);
     try {
-      const res = await fetch("/api/playwright/baseline", {
+      const res = await apiFetch("/api/playwright/baseline", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

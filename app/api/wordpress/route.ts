@@ -64,7 +64,7 @@ export async function POST(request: NextRequest) {
     // Update site last_scan timestamp
     await supabase
       .from("sites")
-      .update({ last_scan: "Just now" })
+      .update({ last_scan: new Date().toISOString() })
       .eq("id", site.id);
 
     return NextResponse.json({

@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
+import { apiFetch } from "@/lib/auth/index";
 
 export interface Site {
   id: string;
@@ -374,7 +375,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       setLoading(true);
       const body = siteId ? { siteId } : { runAll: true };
-      const response = await fetch("/api/checks/run", {
+      const response = await apiFetch("/api/checks/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),

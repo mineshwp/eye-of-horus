@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runSiteCheck, runAllSiteChecks } from "@/lib/checks/index";
+import { getApiUser, unauthorizedResponse } from "@/lib/auth/index";
 
 // Force Node.js runtime — needed for the tls module used in SSL checks
 export const runtime = "nodejs";
@@ -7,6 +8,9 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 export async function POST(request: NextRequest) {
+  const user = await getApiUser(request);
+  if (!user) return unauthorizedResponse();
+
   try {
     const body = await request.json().catch(() => ({}));
     const { siteId, runAll } = body as { siteId?: string; runAll?: boolean };

@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import { useApp } from "@/context/AppContext";
+import { apiFetch } from "@/lib/auth/index";
 import {
   Icon,
   Badge,
@@ -55,7 +56,7 @@ export default function SettingsPage() {
   const fetchAlertSettings = useCallback(async () => {
     setAlertLoading(true);
     try {
-      const res = await fetch('/api/alerts/settings');
+      const res = await apiFetch('/api/alerts/settings');
       if (res.ok) {
         const data = await res.json();
         if (data.settings) setAlertSettings(data.settings);
@@ -73,7 +74,7 @@ export default function SettingsPage() {
     setAlertSettings(merged);
     setAlertSaving(true);
     try {
-      const res = await fetch('/api/alerts/settings', {
+      const res = await apiFetch('/api/alerts/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -126,7 +127,7 @@ export default function SettingsPage() {
   const sendTestAlert = async () => {
     setTestAlertStatus('Sending…');
     try {
-      const res = await fetch('/api/alerts/send', {
+      const res = await apiFetch('/api/alerts/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -544,7 +545,7 @@ const AlertLogCard = () => {
   const fetchLogs = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/alerts/logs?limit=20');
+      const res = await apiFetch('/api/alerts/logs?limit=20');
       if (res.ok) {
         const data = await res.json();
         setLogs(data.logs ?? []);

@@ -1,6 +1,66 @@
+import { createClient } from "@supabase/supabase-js";
+import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 
 export type UserRole = "super_admin" | "admin" | "client";
+
+// ─── Server-side API auth helpers ───────────────────────────────────────────
+
+/**
+ * Validates a Supabase JWT from the request Authorization header.
+ * Returns the user if valid, null otherwise.
+ * Use in API routes to protect internal endpoints.
+ */
+export async function getApiUser(
+  request: NextRequest
+): Promise<{ id: string; email: string } | null> {
+  const authHeader = request.headers.get("Authorization");
+  const token =
+    authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (!token) return null;
+
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !anonKey) return null;
+
+  const serverClient = createClient(url, anonKey, {
+    auth: { persistSession: false },
+  });
+  const {
+    data: { user },
+  } = await serverClient.auth.getUser(token);
+  if (!user) return null;
+
+  return { id: user.id, email: user.email ?? "" };
+}
+
+export function unauthorizedResponse() {
+  return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+}
+
+// ─── Client-side fetch helper ────────────────────────────────────────────────
+
+/**
+ * Drop-in replacement for fetch() that automatically attaches the current
+ * Supabase session token as an Authorization header.
+ * Import this in "use client" components instead of calling fetch() directly.
+ */
+export async function apiFetch(
+  url: string,
+  init: RequestInit = {}
+): Promise<Response> {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  const token = session?.access_token;
+
+  const headers: HeadersInit = {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(init.headers ?? {}),
+  };
+
+  return fetch(url, { ...init, headers });
+}
 
 export interface UserProfile {
   id: string;

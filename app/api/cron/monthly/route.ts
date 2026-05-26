@@ -28,9 +28,7 @@ export async function POST(request: NextRequest) {
   const authHeader = request.headers.get("Authorization");
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
 
-  if (!cronSecret) {
-    console.warn("[cron/monthly] CRON_SECRET not set — endpoint is unprotected");
-  } else if (token !== cronSecret) {
+  if (!cronSecret || token !== cronSecret) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

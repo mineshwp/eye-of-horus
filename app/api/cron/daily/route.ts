@@ -31,9 +31,7 @@ export async function POST(request: NextRequest) {
   const authHeader = request.headers.get("Authorization");
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
 
-  if (!cronSecret) {
-    console.warn("CRON_SECRET not set — cron endpoint is unprotected");
-  } else if (token !== cronSecret) {
+  if (!cronSecret || token !== cronSecret) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -113,7 +111,7 @@ export async function GET(request: NextRequest) {
   const authHeader = request.headers.get("Authorization");
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
 
-  if (cronSecret && token !== cronSecret) {
+  if (!cronSecret || token !== cronSecret) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
