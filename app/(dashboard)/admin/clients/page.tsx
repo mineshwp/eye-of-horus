@@ -88,6 +88,11 @@ export default function AdminClientsPage() {
     e.preventDefault();
     setAddError("");
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        setAddError("Session expired. Please sign out and sign in again.");
+        return;
+      }
       const { error } = await supabase.from("clients").insert([{
         name: newClient.name,
         website_url: newClient.website_url,
