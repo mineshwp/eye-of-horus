@@ -8,8 +8,8 @@ import { Icon, HorusGlyph } from "./ui";
 export default function SignIn() {
   const { signIn } = useApp();
   const router = useRouter();
-  const [email, setEmail] = useState("mia.patel@wetpaint.co.za");
-  const [password, setPassword] = useState("Horus_2026");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -54,10 +54,10 @@ export default function SignIn() {
             <Icon name="bell" size={16} />
           </div>
           <div style={{ flex: 1 }}>
-            <div className="label">Live · last hour</div>
-            <div className="title">3 critical issues detected today</div>
+            <div className="label">Live · continuous monitoring</div>
+            <div className="title">AI-powered website QA — always on</div>
             <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
-              Tarsus contact form failing · Acme mobile hero CTA missing · CSP weakened on Gentech
+              Uptime · SSL · performance · forms · visual regression · WordPress
             </div>
           </div>
         </div>
