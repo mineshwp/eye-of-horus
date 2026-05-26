@@ -159,23 +159,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   useEffect(() => {
     const checkAuth = async () => {
-      const stored = localStorage.getItem("horus-authed");
-      const userStr = localStorage.getItem("horus-user");
-      if (stored === "true" && userStr) {
-        try {
-          setAuthedState(true);
-          setCurrentUser(JSON.parse(userStr));
-        } catch {
-          localStorage.removeItem("horus-user");
-        }
-      }
-
       const { data: { session } } = await supabase.auth.getSession();
       if (session?.user) {
         const user = await fetchProfile(session.user.id, session.user.email || "");
         setCurrentUser(user);
         localStorage.setItem("horus-user", JSON.stringify(user));
         setAuthedState(true);
+      } else {
+        localStorage.removeItem("horus-authed");
+        localStorage.removeItem("horus-user");
+        setAuthedState(false);
       }
     };
     checkAuth();
@@ -206,14 +199,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return true;
       }
 
-      // Fallback for dev environments where Supabase auth isn't fully configured
-      console.warn("Supabase auth unavailable:", error?.message);
-      const name = nameFromEmail(email);
-      const user: CurrentUser = { email, name, role: "admin", initials: getInitials(name) };
-      setCurrentUser(user);
-      localStorage.setItem("horus-user", JSON.stringify(user));
-      setAuthed(true);
-      return true;
+      return false;
     } catch (e) {
       console.error(e);
       return false;
