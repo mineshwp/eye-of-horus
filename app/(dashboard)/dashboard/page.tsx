@@ -63,8 +63,9 @@ export default function Dashboard() {
             </Badge>
           </h1>
           <p className="page-sub">
-            All client websites are being scanned every 15 minutes across desktop, tablet and mobile. 
-            Horus has flagged the critical issues most likely to affect your clients today.
+            {sites.length > 0
+              ? `Monitoring ${sites.length} site${sites.length !== 1 ? "s" : ""} across desktop, tablet and mobile. Horus has flagged the critical issues most likely to affect your clients today.`
+              : "Add your first client site to begin monitoring. Horus will watch for uptime, performance, security, and visual changes automatically."}
           </p>
         </div>
         <div style={{ display: "flex", gap: 10 }}>
@@ -88,10 +89,10 @@ export default function Dashboard() {
           icon="sites"
           label="Monitored sites"
           value={sites.length}
-          delta="+1 onboarded"
-          deltaDir="up"
+          delta={sites.length === 0 ? "Add your first site" : `${sites.length} site${sites.length !== 1 ? "s" : ""} active`}
+          deltaDir="flat"
           glow="rgba(0,229,255,0.22)"
-          spark={[3, 4, 4, 5, 6, 6, 7, sites.length]}
+          spark={[sites.length]}
           sparkColor="#00E5FF"
         />
         <KPI
@@ -99,30 +100,30 @@ export default function Dashboard() {
           label="Healthy"
           value={sites.filter((s) => s.status === "healthy").length}
           unit={`/ ${sites.length}`}
-          delta="Stable"
-          deltaDir="flat"
+          delta={sites.length === 0 ? "No sites yet" : `${sites.filter((s) => s.status === "critical").length} critical`}
+          deltaDir={sites.filter((s) => s.status === "critical").length > 0 ? "up" : "flat"}
           glow="rgba(34,197,94,0.22)"
-          spark={[2, 2, 3, 3, 2, 2, 2, sites.filter((s) => s.status === "healthy").length]}
+          spark={[sites.filter((s) => s.status === "healthy").length]}
           sparkColor="#22C55E"
         />
         <KPI
           icon="issue"
           label="Open issues"
-          value={issues.length}
-          delta="+2 in 24h"
-          deltaDir="up"
+          value={issues.filter((i) => i.status !== "Resolved" && i.status !== "Ignored").length}
+          delta={issues.filter((i) => i.severity === "critical").length > 0 ? `${issues.filter((i) => i.severity === "critical").length} critical` : "No critical issues"}
+          deltaDir={issues.filter((i) => i.severity === "critical").length > 0 ? "up" : "flat"}
           glow="rgba(245,158,11,0.22)"
-          spark={[8, 9, 9, 10, 11, 12, 13, issues.length]}
+          spark={[issues.length]}
           sparkColor="#F59E0B"
         />
         <KPI
           icon="flame"
           label="Critical"
           value={issues.filter((i) => i.severity === "critical").length}
-          delta="Requires action"
-          deltaDir="up"
+          delta={issues.filter((i) => i.severity === "critical").length > 0 ? "Requires action" : "All clear"}
+          deltaDir={issues.filter((i) => i.severity === "critical").length > 0 ? "up" : "flat"}
           glow="rgba(239,68,68,0.22)"
-          spark={[1, 1, 2, 2, 2, 3, 3, issues.filter((i) => i.severity === "critical").length]}
+          spark={[issues.filter((i) => i.severity === "critical").length]}
           sparkColor="#EF4444"
         />
       </div>
@@ -136,12 +137,9 @@ export default function Dashboard() {
                 <Icon name="sparkles" size={11} /> Horus priority
               </span>
               <span className="muted" style={{ fontSize: 12 }}>
-                What to do first · updated 2 min ago
+                Top {priorityItems.length > 0 ? priorityItems.length : ""} priority items
               </span>
             </div>
-            <span className="dim mono" style={{ fontSize: 11 }}>
-              model: horus-qa-3.2
-            </span>
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>

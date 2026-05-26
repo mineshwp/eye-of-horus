@@ -1,42 +1,74 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useApp } from "@/context/AppContext";
 import {
   Icon,
   Badge,
   Tabs,
-  Favicon
+  Favicon,
 } from "@/components/ui";
 
 export default function RegressionPage() {
   const router = useRouter();
   const { sites, issues } = useApp();
 
-  const [selectedSiteId, setSelectedSiteId] = useState("acme");
-  const [viewport, setViewport] = useState("Mobile");
-  const [pageSel, setPageSel] = useState("/  · Homepage");
-  const [compareDate, setCompareDate] = useState("Today 09:14 vs 7 days ago");
+  const [selectedSiteId, setSelectedSiteId] = useState("");
+  const [viewport, setViewport] = useState("Desktop");
 
-  const site = sites.find((s) => s.id === selectedSiteId) || sites[0];
+  // Default to first site once data loads
+  useEffect(() => {
+    if (sites.length > 0 && !selectedSiteId) {
+      setSelectedSiteId(sites[0].id);
+    }
+  }, [sites, selectedSiteId]);
+
+  const site = sites.find((s) => s.id === selectedSiteId) ?? sites[0];
+
+  // Find visual regression issues for the selected site
+  const regressionIssues = site
+    ? issues.filter(
+        (i) => i.siteId === site.id && i.category === "Visual regression" && i.status !== "Resolved" && i.status !== "Ignored"
+      )
+    : [];
 
   const handleApprove = () => {
-    alert(`Visual changes approved for ${site.name} (${pageSel}) on ${viewport}. New baseline is established.`);
+    if (!site) return;
+    alert(`Visual baseline approved for ${site.name} on ${viewport}. New baseline is set.`);
   };
 
   const handleFlag = () => {
-    // Find the critical issue if it's Acme Homepage mobile
-    if (selectedSiteId === "acme" && pageSel === "/  · Homepage" && viewport === "Mobile") {
-      router.push("/issues/i1");
+    if (!site) return;
+    if (regressionIssues.length > 0) {
+      router.push(`/issues/${regressionIssues[0].id}`);
     } else {
-      alert(`Creating visual regression ticket for ${site.name} on ${pageSel}...`);
+      alert(`Creating visual regression ticket for ${site.name}…`);
     }
   };
 
   const handleDefer = () => {
-    alert("Review deferred. This visual difference will be highlighted at the next team sync.");
+    alert("Review deferred. This will be highlighted at the next team sync.");
   };
+
+  if (sites.length === 0) {
+    return (
+      <div className="page fade-in">
+        <div className="page-head">
+          <div>
+            <h1 className="page-title" style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <Icon name="diff" size={22} />
+              Visual changes
+            </h1>
+            <p className="page-sub">Side-by-side baseline vs. latest scan. Horus highlights changed regions and explains what it sees.</p>
+          </div>
+        </div>
+        <div className="card card-pad" style={{ textAlign: "center", padding: 48 }}>
+          <div className="muted">Add client sites to start capturing visual baselines.</div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="page fade-in">
@@ -45,9 +77,9 @@ export default function RegressionPage() {
           <h1 className="page-title" style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <Icon name="diff" size={22} />
             Visual changes
-            {selectedSiteId === "acme" && (
+            {regressionIssues.length > 0 && (
               <Badge tone="crit" dot>
-                1 critical diff
+                {regressionIssues.length} open regression{regressionIssues.length !== 1 ? "s" : ""}
               </Badge>
             )}
           </h1>
@@ -68,7 +100,7 @@ export default function RegressionPage() {
       {/* Selector row */}
       <div className="card" style={{ marginBottom: 18, padding: "14px 18px", display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <Favicon site={site} size={28} />
+          {site && <Favicon site={site} size={28} />}
           <div>
             <div className="label-strip" style={{ marginBottom: 4 }}>Website</div>
             <select
@@ -77,33 +109,12 @@ export default function RegressionPage() {
               onChange={(e) => setSelectedSiteId(e.target.value)}
             >
               {sites.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
+                <option key={s.id} value={s.id}>{s.name}</option>
               ))}
             </select>
           </div>
         </div>
         <div style={{ height: 32, width: 1, background: "var(--border-soft)" }} />
-        <div>
-          <div className="label-strip" style={{ marginBottom: 4 }}>Page</div>
-          <select className="select" value={pageSel} onChange={(e) => setPageSel(e.target.value)}>
-            <option value="/  · Homepage">/  · Homepage</option>
-            <option value="/services">/services</option>
-            <option value="/about">/about</option>
-            <option value="/contact-us">/contact-us</option>
-            <option value="/account/login">/account/login</option>
-          </select>
-        </div>
-        <div>
-          <div className="label-strip" style={{ marginBottom: 4 }}>Compare</div>
-          <select className="select" value={compareDate} onChange={(e) => setCompareDate(e.target.value)}>
-            <option value="Today 09:14 vs 7 days ago">Today 09:14 vs 7 days ago</option>
-            <option value="Today 09:14 vs yesterday">Today 09:14 vs yesterday</option>
-            <option value="Today 09:14 vs last approved baseline">Today 09:14 vs last approved baseline</option>
-          </select>
-        </div>
-
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
           <span className="label-strip">Viewport</span>
           <Tabs tabs={["Desktop", "Tablet", "Mobile"]} active={viewport} onChange={setViewport} />
@@ -114,20 +125,18 @@ export default function RegressionPage() {
       <div className="grid-2eq" style={{ marginBottom: 18, alignItems: "start" }}>
         <ComparisonPane
           label="Baseline"
-          subtitle="7 days ago · approved"
+          subtitle="Last approved baseline"
           viewport={viewport}
-          showCTA={selectedSiteId !== "acme" || pageSel !== "/  · Homepage" || viewport !== "Mobile"}
+          siteUrl={site?.url ?? ""}
           mode="baseline"
-          siteUrl={site.url}
         />
         <ComparisonPane
           label="Current"
-          subtitle="Today · 09:14"
+          subtitle={`Latest scan · ${site?.lastScan ?? "—"}`}
           viewport={viewport}
-          showCTA={false}
+          siteUrl={site?.url ?? ""}
           mode="current"
-          siteUrl={site.url}
-          isAcmeMobile={selectedSiteId === "acme" && pageSel === "/  · Homepage" && viewport === "Mobile"}
+          hasRegression={regressionIssues.length > 0}
         />
       </div>
 
@@ -138,82 +147,56 @@ export default function RegressionPage() {
             <h3>
               <Icon name="diff" size={14} /> Detected changes
             </h3>
-            <span className="h-sub">
-              {viewport} viewport · {selectedSiteId === "acme" && pageSel === "/  · Homepage" && viewport === "Mobile" ? "4 changes" : "0 changes"}
-            </span>
+            <span className="h-sub">{viewport} viewport</span>
           </div>
           <div>
-            {selectedSiteId === "acme" && pageSel === "/  · Homepage" && viewport === "Mobile" ? (
-              <>
+            {regressionIssues.length > 0 ? (
+              regressionIssues.map((issue) => (
                 <ChangeRow
+                  key={issue.id}
                   tone="crit"
-                  type="Broken component"
-                  label="Hero CTA — 'Open an account' missing"
-                  region="Region 12% / 62% · 55% × 10%"
-                  conf={96}
+                  type={issue.changeType}
+                  label={issue.title}
+                  region={`Page: ${issue.page}`}
+                  conf={issue.confidence}
                   active
-                  onOpen={() => router.push("/issues/i1")}
+                  onOpen={() => router.push(`/issues/${issue.id}`)}
                 />
-                <ChangeRow
-                  tone="warn"
-                  type="Layout shift"
-                  label="Hero subheading moved up 24px on mobile"
-                  region="Region 12% / 28% · 60% × 6%"
-                  conf={88}
-                />
-                <ChangeRow
-                  tone="info"
-                  type="Copy change"
-                  label="Footer link 'Insights' renamed to 'Resources'"
-                  region="Region 4% / 92% · 12% × 4%"
-                  conf={99}
-                />
-                <ChangeRow
-                  tone="info"
-                  type="Styling change"
-                  label="Primary brand color shifted 4% lighter"
-                  region="Global · 17 elements affected"
-                  conf={84}
-                />
-              </>
+              ))
             ) : (
               <div className="empty" style={{ padding: "40px 10px" }}>
-                No visual differences detected on this page/viewport vs baseline.
+                No visual differences detected. Either the baseline matches the current scan or no baseline has been set yet.
               </div>
             )}
           </div>
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-          {selectedSiteId === "acme" && pageSel === "/  · Homepage" && viewport === "Mobile" ? (
-            <div className="ai-callout">
-              <span className="ai-tag">
-                <Icon name="sparkles" size={11} /> Horus explanation
-              </span>
-              <div style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 500, lineHeight: 1.4, marginTop: 10 }}>
-                The hero CTA "Open an account" was removed from the mobile viewport in the last theme update.
-              </div>
+          <div className="ai-callout">
+            <span className="ai-tag">
+              <Icon name="sparkles" size={11} /> Horus explanation
+            </span>
+            {regressionIssues.length > 0 ? (
+              <>
+                <div style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 500, lineHeight: 1.4, marginTop: 10 }}>
+                  {regressionIssues.length} visual regression{regressionIssues.length !== 1 ? "s" : ""} detected on {site?.name}.
+                </div>
+                <div style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 10, lineHeight: 1.6 }}>
+                  {regressionIssues[0].recommended}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
+                  <Badge tone="med" lg>{regressionIssues[0].confidence}% confidence</Badge>
+                  <Badge tone="ghost">{regressionIssues[0].changeType}</Badge>
+                </div>
+              </>
+            ) : (
               <div style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 10, lineHeight: 1.6 }}>
-                This element drives 41% of mobile lead form submissions in the last 30 days. The change correlates with theme update Astra 4.6.10 deployed yesterday at 12:04. No matching ticket was found.
+                {site
+                  ? `Layout matches the active baseline with high accuracy. No unexpected changes detected on ${site.name} (${viewport.toLowerCase()}).`
+                  : "Select a site to see visual regression data."}
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
-                <Badge tone="med" lg>
-                  96% confidence
-                </Badge>
-                <Badge tone="ghost">DOM diff</Badge>
-                <Badge tone="ghost">Visual diff</Badge>
-              </div>
-            </div>
-          ) : (
-            <div className="ai-callout">
-              <span className="ai-tag">
-                <Icon name="sparkles" size={11} /> Horus explanation
-              </span>
-              <div style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 10, lineHeight: 1.6 }}>
-                Layout matches the active baseline with high accuracy (DOM identity: 100%, pixel correlation: 99.8%). No layout shifts or missing elements detected.
-              </div>
-            </div>
-          )}
+            )}
+          </div>
 
           <div className="card">
             <div className="card-head">
@@ -243,21 +226,10 @@ export default function RegressionPage() {
 }
 
 const ChangeRow = ({
-  tone,
-  type,
-  label,
-  region,
-  conf,
-  active,
-  onOpen
+  tone, type, label, region, conf, active, onOpen,
 }: {
-  tone: "crit" | "warn" | "info";
-  type: string;
-  label: string;
-  region: string;
-  conf: number;
-  active?: boolean;
-  onOpen?: () => void;
+  tone: "crit" | "warn" | "info"; type: string; label: string;
+  region: string; conf: number; active?: boolean; onOpen?: () => void;
 }) => (
   <div
     className="feed-item"
@@ -268,7 +240,7 @@ const ChangeRow = ({
       className="feed-icon"
       style={{
         borderColor: tone === "crit" ? "rgba(239,68,68,0.4)" : tone === "warn" ? "rgba(245,158,11,0.4)" : "rgba(0,229,255,0.3)",
-        color: tone === "crit" ? "#FCA5A5" : tone === "warn" ? "#FCD37A" : "#7DE4F2"
+        color: tone === "crit" ? "#FCA5A5" : tone === "warn" ? "#FCD37A" : "#7DE4F2",
       }}
     >
       <Icon name={tone === "crit" ? "issue" : tone === "warn" ? "diff" : "code"} size={14} />
@@ -286,21 +258,10 @@ const ChangeRow = ({
 );
 
 const ComparisonPane = ({
-  label,
-  subtitle,
-  viewport,
-  showCTA,
-  mode,
-  siteUrl,
-  isAcmeMobile
+  label, subtitle, viewport, siteUrl, mode, hasRegression,
 }: {
-  label: string;
-  subtitle: string;
-  viewport: string;
-  showCTA: boolean;
-  mode: "baseline" | "current";
-  siteUrl: string;
-  isAcmeMobile?: boolean;
+  label: string; subtitle: string; viewport: string;
+  siteUrl: string; mode: "baseline" | "current"; hasRegression?: boolean;
 }) => {
   const isMobile = viewport === "Mobile";
   const isTablet = viewport === "Tablet";
@@ -321,11 +282,7 @@ const ComparisonPane = ({
         style={{ height: isMobile ? 480 : 420 }}
       >
         <div className="vp-head" style={{ height: 24, background: "rgba(255,255,255,0.04)" }}>
-          <div className="vp-dots">
-            <span />
-            <span />
-            <span />
-          </div>
+          <div className="vp-dots"><span /><span /><span /></div>
           <div className="vp-url">{siteUrl}</div>
         </div>
         <div className="vp-content" style={{ padding: 14, overflowY: "auto", height: "calc(100% - 24px)" }}>
@@ -333,23 +290,21 @@ const ComparisonPane = ({
           <div className="mock-block p" />
           <div className="mock-block p s" />
           <div className="mock-block img" style={{ minHeight: isMobile ? 100 : 140 }} />
-          {showCTA && <div className="mock-block btn-pri" style={{ background: "var(--gold)" }} />}
-          {!showCTA && mode === "current" && isAcmeMobile && (
+          {mode === "baseline" && <div className="mock-block btn-pri" style={{ background: "var(--gold)" }} />}
+          {mode === "current" && hasRegression && (
             <div
               style={{
                 border: "2px dashed var(--red)",
-                borderRadius: 6,
-                padding: 10,
+                borderRadius: 6, padding: 10,
                 background: "rgba(239,68,68,0.08)",
-                color: "#FCA5A5",
-                fontSize: 11.5,
-                fontFamily: "var(--font-mono)",
-                textAlign: "center",
+                color: "#FCA5A5", fontSize: 11.5,
+                fontFamily: "var(--font-mono)", textAlign: "center",
               }}
             >
-              missing element
+              regression detected
             </div>
           )}
+          {mode === "current" && !hasRegression && <div className="mock-block btn-pri" style={{ background: "var(--gold)" }} />}
           <div className="mock-block p" />
           <div className="mock-block p s" />
           <div style={{ display: "flex", gap: 8 }}>
@@ -359,22 +314,10 @@ const ComparisonPane = ({
           </div>
         </div>
 
-        {/* Diff overlays only on current */}
-        {mode === "current" && isAcmeMobile && (
-          <>
-            {isMobile ? (
-              <div className="diff-overlay crit" style={{ left: "8%", top: "62%", width: "84%", height: "10%", pointerEvents: "none" }}>
-                <span className="tag">CRIT · missing CTA</span>
-              </div>
-            ) : (
-              <div className="diff-overlay warn" style={{ left: "8%", top: "28%", width: "60%", height: "6%", pointerEvents: "none" }}>
-                <span className="tag">WARN · layout shift</span>
-              </div>
-            )}
-            <div className="diff-overlay" style={{ left: "4%", top: "84%", width: "20%", height: "4%", pointerEvents: "none" }}>
-              <span className="tag">copy change</span>
-            </div>
-          </>
+        {mode === "current" && hasRegression && (
+          <div className="diff-overlay crit" style={{ left: "8%", top: "40%", width: "84%", height: "10%", pointerEvents: "none" }}>
+            <span className="tag">regression detected</span>
+          </div>
         )}
       </div>
     </div>

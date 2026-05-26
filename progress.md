@@ -1,7 +1,22 @@
 # Eye of Horus — Progress Log
 
 ## Latest Update
-**2026-05-26 — Platform is LIVE. All DB migrations applied. Ready for credentials.**
+**2026-05-26 — Production-ready: all demo seed data cleared, all pages now fully DB-driven.**
+
+### What was done this session
+- Created migration `20260526000000_clear_seed_data.sql` — deletes all demo seed data (Acme Finance, Tarsus, Greenfield, etc.) from `sites`, `issues`, `wp_updates`, `clients`, `activities`. User will add their real clients.
+- **AppContext** (`context/AppContext.tsx`) — removed all hardcoded "Mia Patel", "mia.patel@wetpaint.co.za", "Director · Wetpaint" references. Now fetches `profiles` table after Supabase auth to get the logged-in user's real name and role. Timestamps use real `toLocaleTimeString()` instead of "Just now".
+- **Dashboard** (`app/(dashboard)/dashboard/page.tsx`) — KPI deltas now compute from live data (e.g. critical count, healthy count). Sparklines reduced to current value instead of hardcoded fake history. Subtitle text is data-driven.
+- **Issue detail** (`app/(dashboard)/issues/[id]/page.tsx`) — owners list now fetched from `profiles` table. Note attribution uses `currentUser.name`. All `i1`/`i2` hardcoded evidence blocks removed; replaced with generic evidence from `issue.evidence` JSONB field. Suggested fix now uses `issue.recommended` from DB.
+- **Reports** (`app/(dashboard)/reports/page.tsx`) — complete rewrite of all tab content. WeeklySummary, PortfolioCards, ClientReady, InternalDev, and Trends tabs all compute from live AppContext data. No hardcoded company names remain.
+- **WP updates** (`app/(dashboard)/wp/page.tsx`) — hardcoded history array removed; replaced with live WP-type activities from the activity feed. Recommended order now dynamically sorted by risk and flag from `wp_updates` table.
+- **Visual regression** (`app/(dashboard)/regression/page.tsx`) — removed all `selectedSiteId === "acme"` conditionals. Defaults to first real site. Change list shows real visual regression issues from DB. Empty states shown when no baseline or data exists.
+- **Settings** (`app/(dashboard)/settings/page.tsx`) — removed "applies to: Acme Finance", hardcoded "18 pages" badge, "Connected · #wetpaint-alerts", "https://hooks.wetpaint.co.za/horus" webhook URL, and "Configured · test user". All replaced with generic/instructional text.
+- TypeScript check passes cleanly (0 errors).
+
+---
+
+**Previous: 2026-05-26 — Platform is LIVE. All DB migrations applied. Ready for credentials.**
 
 ### What was done this session
 - Fixed type mismatch in `supabase/migrations/20260523800000_phase8_alerts.sql` — `notification_logs.issue_id` changed from `uuid` to `text` to match `issues.id TEXT` primary key

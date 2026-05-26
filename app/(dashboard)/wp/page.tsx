@@ -1,20 +1,28 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useApp } from "@/context/AppContext";
 import {
   Icon,
   Badge,
-  Favicon
+  Favicon,
 } from "@/components/ui";
 
+interface ActivityRecord {
+  id?: number;
+  time: string;
+  site: string;
+  text: string;
+  sev: string;
+  type: string;
+}
+
 export default function WpUpdatesPage() {
-  const { sites, wpUpdates } = useApp();
+  const { sites, wpUpdates, activities } = useApp();
   const [filter, setFilter] = useState("All");
   const [localUpdates, setLocalUpdates] = useState(wpUpdates);
 
-  // Synchronize local updates when state updates
-  React.useEffect(() => {
+  useEffect(() => {
     setLocalUpdates(wpUpdates);
   }, [wpUpdates]);
 
@@ -30,11 +38,10 @@ export default function WpUpdatesPage() {
   });
 
   const handleUpdate = (id: string, target: string, siteName: string) => {
-    alert(`Starting safe update process for ${target} on ${siteName}...`);
-    // Simulate update success
+    alert(`Starting safe update process for ${target} on ${siteName}…`);
     setTimeout(() => {
       setLocalUpdates((prev) => prev.filter((item) => item.id !== id));
-      alert(`Successfully updated ${target} on ${siteName}. Visual regression tests passed!`);
+      alert(`${target} on ${siteName} updated successfully. Visual regression tests passed.`);
     }, 1200);
   };
 
@@ -44,31 +51,39 @@ export default function WpUpdatesPage() {
       alert("No safe updates in queue.");
       return;
     }
-    alert(`Running automated updates for ${safeUpdates.length} packages...`);
+    alert(`Running automated updates for ${safeUpdates.length} package${safeUpdates.length !== 1 ? "s" : ""}…`);
     setTimeout(() => {
       const safeIds = safeUpdates.map((u) => u.id);
       setLocalUpdates((prev) => prev.filter((item) => !safeIds.includes(item.id)));
-      alert(`Automated updates completed successfully for: ${safeUpdates.map(u => u.target).join(", ")}. all regression scans passed.`);
+      alert(`Updates completed: ${safeUpdates.map((u) => u.target).join(", ")}. All regression scans passed.`);
     }, 1500);
   };
 
   const handleStage = (target: string, siteName: string) => {
-    alert(`Staging environment cloned. Deploying ${target} on staging-sandbox for ${siteName}. Form scouts triggered.`);
+    alert(`Staging environment ready. Deploy ${target} on staging for ${siteName} and run form scouts.`);
   };
-
-  // Update history
-  const history = [
-    { date: "Today · 11:22", text: "Yoast SEO 22.7 → 22.9", site: "Wetpaint Corporate", outcome: "ok", note: "Auto-update · no issues" },
-    { date: "Today · 09:30", text: "Astra Theme 4.6.10 → 4.6.11", site: "Greenfield Estates", outcome: "ok", note: "Manual update · regression passed" },
-    { date: "Today · 06:18", text: "Form-Pro 4.1.9 → 4.2.1", site: "Tarsus Cloud Portal", outcome: "fail", note: "Form submissions failed · rolled back" },
-    { date: "Yesterday", text: "WordPress 6.5.5 → 6.6.0", site: "Acme Finance", outcome: "ok", note: "Manual update · 14 regression checks passed" },
-    { date: "2 days ago", text: "WooCommerce 8.9.1 → 8.9.2", site: "Gentech Industries", outcome: "warn", note: "Cart layout drift on tablet · acknowledged" },
-  ];
 
   const pendingCount = localUpdates.length;
   const safeCount = localUpdates.filter((u) => u.flag === "Safe update").length;
   const stagingCount = localUpdates.filter((u) => u.flag === "Needs staging test").length;
   const criticalRiskCount = localUpdates.filter((u) => u.risk === "high").length;
+
+  // Recommended order: sort by risk then priority
+  const riskOrder = { high: 0, medium: 1, low: 2 };
+  const flagOrder: Record<string, number> = { "Do not update": 3, "Needs staging test": 1, "Safe update": 0 };
+  const orderedUpdates = [...localUpdates]
+    .sort((a, b) => {
+      const rA = riskOrder[a.risk as keyof typeof riskOrder] ?? 2;
+      const rB = riskOrder[b.risk as keyof typeof riskOrder] ?? 2;
+      if (rA !== rB) return rA - rB;
+      return (flagOrder[a.flag] ?? 2) - (flagOrder[b.flag] ?? 2);
+    })
+    .slice(0, 6);
+
+  // Recent WP-related activities from the activity feed
+  const wpHistory: ActivityRecord[] = activities
+    .filter((a) => a.type === "wp")
+    .slice(0, 10);
 
   return (
     <div className="page fade-in">
@@ -77,20 +92,24 @@ export default function WpUpdatesPage() {
           <h1 className="page-title" style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <Icon name="wp" size={22} />
             WordPress updates
-            <Badge tone="high" dot>
-              {pendingCount} pending
-            </Badge>
+            {pendingCount > 0 && (
+              <Badge tone="high" dot>
+                {pendingCount} pending
+              </Badge>
+            )}
           </h1>
           <p className="page-sub">
-            Core, plugin and theme updates across all monitored sites with AI-estimated compatibility risk and a recommended order of operations.
+            {pendingCount > 0
+              ? `Core, plugin and theme updates across all monitored sites with AI-estimated compatibility risk and recommended order.`
+              : "All WordPress sites are up to date. Horus will notify you when new updates are available."}
           </p>
         </div>
         <div style={{ display: "flex", gap: 10 }}>
-          <button className="btn" onClick={() => alert("CSV Exported successfully")} type="button">
+          <button className="btn" onClick={() => alert("CSV exported successfully.")} type="button">
             <Icon name="download" size={13} /> Export queue
           </button>
-          <button className="btn primary" onClick={handleRunSafeUpdates} type="button">
-            <Icon name="play" size={13} /> Run safe updates · {safeCount}
+          <button className="btn primary" onClick={handleRunSafeUpdates} disabled={safeCount === 0} type="button">
+            <Icon name="play" size={13} /> Run safe updates{safeCount > 0 ? ` · ${safeCount}` : ""}
           </button>
         </div>
       </div>
@@ -98,30 +117,40 @@ export default function WpUpdatesPage() {
       {/* Summary cards */}
       <div className="grid-4" style={{ marginBottom: 18 }}>
         <SummaryCard tone="amber" icon="wp" label="Pending updates" value={String(pendingCount)} sub="across monitored sites" />
-        <SummaryCard tone="green" icon="check" label="Safe to update" value={String(safeCount)} sub="zero-risk, autopatch ready" />
+        <SummaryCard tone="green" icon="check" label="Safe to update" value={String(safeCount)} sub="autopatch ready" />
         <SummaryCard tone="cyan" icon="shield" label="Need staging" value={String(stagingCount)} sub="custom hooks / overrides" />
-        <SummaryCard tone="red" icon="issue" label="Critical risk" value={String(criticalRiskCount)} sub="Form-Pro rollback active" />
+        <SummaryCard tone="red" icon="issue" label="Critical risk" value={String(criticalRiskCount)} sub="hold until reviewed" />
       </div>
 
-      {/* Recommended order */}
-      <div className="ai-callout" style={{ marginBottom: 18 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-          <span className="ai-tag">
-            <Icon name="sparkles" size={11} /> Horus recommended order
-          </span>
-          <span className="dim" style={{ fontSize: 12 }}>
-            updated 4 min ago
-          </span>
+      {/* Recommended order — dynamic from real data */}
+      {orderedUpdates.length > 0 && (
+        <div className="ai-callout" style={{ marginBottom: 18 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+            <span className="ai-tag">
+              <Icon name="sparkles" size={11} /> Horus recommended order
+            </span>
+            <span className="dim" style={{ fontSize: 12 }}>sorted by risk · {orderedUpdates.length} shown</span>
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {orderedUpdates.map((u, i) => {
+              const site = sites.find((s) => s.id === u.siteId);
+              const tone =
+                u.flag === "Safe update" ? "ok" :
+                u.flag === "Do not update" ? "crit" : "warn";
+              return (
+                <OrderStep
+                  key={u.id}
+                  n={i + 1}
+                  site={site?.name ?? "Unknown"}
+                  target={`${u.target} ${u.to}`}
+                  tone={tone}
+                  note={u.notes}
+                />
+              );
+            })}
+          </div>
         </div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <OrderStep n={1} site="Acme Finance" target="WP Core 6.6.1" tone="ok" note="Security release · auto-deploy" />
-          <OrderStep n={2} site="Gentech" target="Yoast SEO 22.9" tone="ok" note="Patch · auto-deploy" />
-          <OrderStep n={3} site="Flexcom" target="Astra Theme 4.7.2" tone="ok" note="No child overrides" />
-          <OrderStep n={4} site="Gentech" target="Elementor Pro 3.22" tone="warn" note="Stage first · template overrides" />
-          <OrderStep n={5} site="Acme Finance" target="WooCommerce 9.0.1" tone="warn" note="Major version · custom hooks" />
-          <OrderStep n={6} site="Tarsus" target="Form-Pro 4.2.1" tone="crit" note="Hold · regression in production" />
-        </div>
-      </div>
+      )}
 
       {/* Filter + queue */}
       <div className="card" style={{ marginBottom: 18 }}>
@@ -151,7 +180,7 @@ export default function WpUpdatesPage() {
               display: "grid",
               gridTemplateColumns: "2.2fr 1.5fr 1fr 1.2fr 1.8fr",
               gap: 14,
-              alignItems: "center"
+              alignItems: "center",
             }}
           >
             <div className="label-strip">Target · site</div>
@@ -174,17 +203,20 @@ export default function WpUpdatesPage() {
                     display: "grid",
                     gridTemplateColumns: "2.2fr 1.5fr 1fr 1.2fr 1.8fr",
                     gap: 14,
-                    alignItems: "center"
+                    alignItems: "center",
                   }}
                 >
                   <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                    <div className="wp-icon" style={{ color: site.brand, width: 32, height: 32, display: "grid", placeItems: "center", background: "rgba(255,255,255,0.02)", border: "1px solid var(--border-soft)", borderRadius: 8 }}>
+                    <div
+                      className="wp-icon"
+                      style={{ color: site?.brand, width: 32, height: 32, display: "grid", placeItems: "center", background: "rgba(255,255,255,0.02)", border: "1px solid var(--border-soft)", borderRadius: 8 }}
+                    >
                       <Icon name={targetIcon} size={14} />
                     </div>
                     <div>
                       <div style={{ fontSize: 13.5, fontWeight: 600 }}>{u.target}</div>
                       <div className="dim" style={{ fontSize: 11.5 }}>
-                        {site.name} · {u.notes}
+                        {site?.name} · {u.notes}
                       </div>
                     </div>
                   </div>
@@ -202,17 +234,17 @@ export default function WpUpdatesPage() {
                     <Badge tone={flagTone}>{u.flag}</Badge>
                   </div>
                   <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                    <button className="btn ghost sm" onClick={() => alert(`${u.target} updates ignored for 30 days.`)} type="button">
+                    <button className="btn ghost sm" onClick={() => alert(`${u.target} skipped for 30 days.`)} type="button">
                       Skip
                     </button>
-                    <button className="btn sm" onClick={() => handleStage(u.target, site.name)} type="button">
+                    <button className="btn sm" onClick={() => handleStage(u.target, site?.name ?? "")} type="button">
                       Stage
                     </button>
                     <button
                       className={`btn ${u.flag === "Safe update" ? "primary" : ""} sm`}
                       disabled={u.flag === "Do not update"}
                       style={u.flag === "Do not update" ? { opacity: 0.4, cursor: "not-allowed" } : {}}
-                      onClick={() => handleUpdate(u.id, u.target, site.name)}
+                      onClick={() => handleUpdate(u.id, u.target, site?.name ?? "")}
                       type="button"
                     >
                       Update
@@ -223,47 +255,51 @@ export default function WpUpdatesPage() {
             })
           ) : (
             <div className="empty" style={{ padding: "40px 10px" }}>
-              No updates in this filter.
+              {pendingCount === 0 ? "All sites are up to date." : "No updates match this filter."}
             </div>
           )}
         </div>
       </div>
 
-      {/* Update history */}
+      {/* Update history — from live activity feed */}
       <div className="card">
         <div className="card-head">
           <h3>
-            <Icon name="clock" size={14} /> Update history
+            <Icon name="clock" size={14} /> Recent WordPress activity
           </h3>
-          <span className="h-sub">last 7 days</span>
+          <span className="h-sub">from activity log</span>
         </div>
         <div>
-          {history.map((h, i) => (
-            <div key={i} className="feed-item">
-              <div
-                className="feed-icon"
-                style={{
-                  color: h.outcome === "ok" ? "var(--green)" : h.outcome === "warn" ? "var(--amber)" : "var(--red)",
-                  borderColor: h.outcome === "ok" ? "rgba(34,197,94,0.3)" : h.outcome === "warn" ? "rgba(245,158,11,0.3)" : "rgba(239,68,68,0.3)"
-                }}
-              >
-                <Icon name={h.outcome === "ok" ? "check" : h.outcome === "warn" ? "issue" : "x"} size={14} />
-              </div>
-              <div className="feed-body">
-                <div className="feed-title">{h.text}</div>
-                <div className="feed-meta">
-                  <span>{h.site}</span>
-                  <span className="pip" />
-                  <span className="mono">{h.date}</span>
-                  <span className="pip" />
-                  <span>{h.note}</span>
+          {wpHistory.length > 0 ? (
+            wpHistory.map((h, i) => (
+              <div key={i} className="feed-item">
+                <div
+                  className="feed-icon"
+                  style={{
+                    color: h.sev === "crit" || h.sev === "high" ? "var(--amber)" : "var(--green)",
+                    borderColor: h.sev === "crit" || h.sev === "high" ? "rgba(245,158,11,0.3)" : "rgba(34,197,94,0.3)",
+                  }}
+                >
+                  <Icon name="wp" size={14} />
                 </div>
+                <div className="feed-body">
+                  <div className="feed-title">{h.text}</div>
+                  <div className="feed-meta">
+                    <span>{h.site}</span>
+                    <span className="pip" />
+                    <span className="mono">{h.time}</span>
+                  </div>
+                </div>
+                <Badge tone={h.sev === "crit" ? "crit" : h.sev === "high" ? "high" : "ok"}>
+                  {h.sev === "crit" ? "Critical" : h.sev === "high" ? "High" : "OK"}
+                </Badge>
               </div>
-              <Badge tone={h.outcome === "ok" ? "ok" : h.outcome === "warn" ? "high" : "crit"}>
-                {h.outcome === "ok" ? "Success" : h.outcome === "warn" ? "Warning" : "Rolled back"}
-              </Badge>
+            ))
+          ) : (
+            <div className="empty" style={{ padding: "32px 18px" }}>
+              No WordPress activity recorded yet. Activity will appear here after scans run.
             </div>
-          ))}
+          )}
         </div>
       </div>
     </div>
@@ -271,25 +307,14 @@ export default function WpUpdatesPage() {
 }
 
 const SummaryCard = ({ tone, icon, label, value, sub }: { tone: string; icon: string; label: string; value: string; sub: string }) => {
-  const colorMap: Record<string, string> = {
-    amber: "#F59E0B",
-    green: "#22C55E",
-    cyan: "#00E5FF",
-    red: "#EF4444"
-  };
+  const colorMap: Record<string, string> = { amber: "#F59E0B", green: "#22C55E", cyan: "#00E5FF", red: "#EF4444" };
   const c = colorMap[tone] || "#D4AF37";
   return (
     <div className="card kpi-card">
       <div className="kpi-bg" style={{ background: `${c}33` }} />
-      <div className="kpi-head">
-        <Icon name={icon} size={13} /> {label}
-      </div>
-      <div className="kpi-value" style={{ color: c }}>
-        {value}
-      </div>
-      <div className="kpi-foot">
-        <span className="dim">{sub}</span>
-      </div>
+      <div className="kpi-head"><Icon name={icon} size={13} /> {label}</div>
+      <div className="kpi-value" style={{ color: c }}>{value}</div>
+      <div className="kpi-foot"><span className="dim">{sub}</span></div>
     </div>
   );
 };
@@ -300,38 +325,24 @@ const OrderStep = ({ n, site, target, tone, note }: { n: number; site: string; t
   return (
     <div
       style={{
-        flex: "1 1 220px",
-        padding: "12px 14px",
-        background: "rgba(255,255,255,0.02)",
-        border: "1px solid var(--border-soft)",
-        borderRadius: 10,
-        display: "flex",
-        alignItems: "center",
-        gap: 12
+        flex: "1 1 220px", padding: "12px 14px",
+        background: "rgba(255,255,255,0.02)", border: "1px solid var(--border-soft)", borderRadius: 10,
+        display: "flex", alignItems: "center", gap: 12,
       }}
     >
       <div
         style={{
-          width: 28,
-          height: 28,
-          borderRadius: 8,
-          display: "grid",
-          placeItems: "center",
-          background: `${c}22`,
-          color: c,
-          fontFamily: "var(--font-display)",
-          fontWeight: 700,
-          fontSize: 13,
-          border: `1px solid ${c}55`
+          width: 28, height: 28, borderRadius: 8, display: "grid", placeItems: "center",
+          background: `${c}22`, color: c,
+          fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13,
+          border: `1px solid ${c}55`,
         }}
       >
         {n}
       </div>
       <div style={{ minWidth: 0, flex: 1 }}>
         <div style={{ fontWeight: 600, fontSize: 13 }}>{target}</div>
-        <div className="dim" style={{ fontSize: 11.5 }}>
-          {site} · {note}
-        </div>
+        <div className="dim" style={{ fontSize: 11.5 }}>{site} · {note}</div>
       </div>
     </div>
   );

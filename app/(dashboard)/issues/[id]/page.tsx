@@ -1,25 +1,47 @@
 "use client";
 
-import React, { useState, useEffect, use } from "react";
+import React, { useState, useEffect, use, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { useApp, Issue, Site } from "@/context/AppContext";
+import { useApp } from "@/context/AppContext";
+import { supabase } from "@/lib/supabase";
 import {
   Icon,
   Badge,
   SeverityChip,
-  StatusChip,
   Favicon,
-  HorusGlyph
 } from "@/components/ui";
 
 interface PageProps {
   params: Promise<{ id: string }>;
 }
 
+interface TeamMember {
+  full_name: string;
+  role: string;
+}
+
+function getInitials(name: string): string {
+  return name
+    .split(" ")
+    .map((n) => n[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+}
+
+function nowLabel(): string {
+  return new Date().toLocaleString("en-ZA", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 export default function IssueDetailPage({ params }: PageProps) {
   const router = useRouter();
   const { id: issueId } = use(params);
-  const { sites, issues, updateIssue } = useApp();
+  const { sites, issues, updateIssue, currentUser } = useApp();
 
   const issue = issues.find((i) => i.id === issueId);
   const site = sites.find((s) => s.id === issue?.siteId);
@@ -30,8 +52,8 @@ export default function IssueDetailPage({ params }: PageProps) {
   const [notesList, setNotesList] = useState<{ date: string; author: string; text: string }[]>([]);
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
+  const [teamMembers, setTeamMembers] = useState<string[]>(["Unassigned"]);
 
-  // Sync state with issue when loaded
   useEffect(() => {
     if (issue) {
       setStatus(issue.status);
@@ -39,7 +61,26 @@ export default function IssueDetailPage({ params }: PageProps) {
     }
   }, [issue]);
 
-  // Fetch live AI issue analysis
+  // Load team members from profiles table
+  const fetchTeamMembers = useCallback(async () => {
+    try {
+      const { data } = await supabase
+        .from("profiles")
+        .select("full_name, role")
+        .eq("status", "active")
+        .order("full_name");
+      if (data && data.length > 0) {
+        setTeamMembers(["Unassigned", ...data.map((p: TeamMember) => p.full_name)]);
+      }
+    } catch {
+      // Falls back to just Unassigned
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchTeamMembers();
+  }, [fetchTeamMembers]);
+
   useEffect(() => {
     const fetchAnalysis = async () => {
       if (!issueId || !site?.id) return;
@@ -48,13 +89,11 @@ export default function IssueDetailPage({ params }: PageProps) {
         const res = await fetch("/api/ai/issue", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ issueId, siteId: site.id })
+          body: JSON.stringify({ issueId, siteId: site.id }),
         });
         if (res.ok) {
           const data = await res.json();
-          if (data.analysis) {
-            setAiAnalysis(data.analysis);
-          }
+          if (data.analysis) setAiAnalysis(data.analysis);
         }
       } catch (err) {
         console.error("Error loading AI analysis:", err);
@@ -69,8 +108,8 @@ export default function IssueDetailPage({ params }: PageProps) {
     return (
       <div className="page">
         <div className="card card-pad" style={{ textAlign: "center", padding: 48 }}>
-          <div className="muted">No issue found. Please return to the dashboard.</div>
-          <button className="btn primary mt-4" onClick={() => router.push("/dashboard")} type="button">
+          <div className="muted">Issue not found. It may have been resolved or removed.</div>
+          <button className="btn primary" style={{ marginTop: 16 }} onClick={() => router.push("/dashboard")} type="button">
             Go to Dashboard
           </button>
         </div>
@@ -79,7 +118,6 @@ export default function IssueDetailPage({ params }: PageProps) {
   }
 
   const statuses = ["New", "Investigating", "In Progress", "Resolved", "Ignored"];
-  const owners = ["Unassigned", "M. Patel", "J. Ndlovu", "S. Khumalo", "T. Mokoena", "L. Adams"];
 
   const handleStatusChange = async (newStatus: string) => {
     setStatus(newStatus);
@@ -91,17 +129,16 @@ export default function IssueDetailPage({ params }: PageProps) {
     await updateIssue(issue.id, { owner: newOwner });
   };
 
-  const handlePostNote = (e: React.FormEvent) => {
+  const handlePostNote = (e: React.SyntheticEvent) => {
     e.preventDefault();
     if (!note.trim()) return;
-
     setNotesList((prev) => [
       ...prev,
       {
-        date: "Just now",
-        author: "Mia Patel (You)",
-        text: note.trim()
-      }
+        date: nowLabel(),
+        author: currentUser?.name ?? "You",
+        text: note.trim(),
+      },
     ]);
     setNote("");
   };
@@ -116,6 +153,11 @@ export default function IssueDetailPage({ params }: PageProps) {
     await updateIssue(issue.id, { status: "Ignored" });
   };
 
+  const userInitials = currentUser ? getInitials(currentUser.name) : "?";
+
+  // Build evidence block from issue data
+  const hasEvidence = issue.evidence && Object.keys(issue.evidence).length > 0;
+
   return (
     <div className="page fade-in">
       <div className="page-head">
@@ -123,17 +165,7 @@ export default function IssueDetailPage({ params }: PageProps) {
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, color: "var(--text-tertiary)", fontSize: 12.5 }}>
             <button
               onClick={() => router.push(`/sites/${site.id}`)}
-              style={{
-                background: "transparent",
-                border: 0,
-                color: "var(--cyan)",
-                cursor: "pointer",
-                padding: 0,
-                fontSize: 12.5,
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 4
-              }}
+              style={{ background: "transparent", border: 0, color: "var(--cyan)", cursor: "pointer", padding: 0, fontSize: 12.5, display: "inline-flex", alignItems: "center", gap: 4 }}
               type="button"
             >
               <Icon name="chevron" size={11} style={{ transform: "rotate(180deg)" }} /> {site.name}
@@ -155,7 +187,7 @@ export default function IssueDetailPage({ params }: PageProps) {
           <button className="btn" onClick={handleQuickIgnore} type="button">
             <Icon name="x" size={13} /> Ignore
           </button>
-          <button className="btn" onClick={() => alert("Task created successfully in Jira")} type="button">
+          <button className="btn" onClick={() => alert("Create a task in your project management tool.")} type="button">
             <Icon name="plus" size={13} /> Create task
           </button>
           <button className="btn primary" onClick={handleQuickResolve} type="button">
@@ -185,10 +217,9 @@ export default function IssueDetailPage({ params }: PageProps) {
                 issue.recommended
               )}
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <MiniStat label="Client impact" value={issue.impact} />
-              <MiniStat label="Why this matters" value="Affects primary conversion path on the highest-traffic page." />
-              <MiniStat label="Suggested owner" value="Frontend · M. Patel" />
+              <MiniStat label="Category" value={issue.category} />
             </div>
           </div>
 
@@ -199,42 +230,30 @@ export default function IssueDetailPage({ params }: PageProps) {
               </h3>
               <div style={{ display: "flex", gap: 8 }}>
                 <Badge tone="ghost">
-                  <Icon name="mobile" size={11} /> Mobile · iPhone 14
-                </Badge>
-                <Badge tone="ghost">
                   <Icon name="clock" size={11} /> {issue.detected}
                 </Badge>
               </div>
             </div>
             <div className="card-pad">
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-                <EvidenceShot label="Baseline · 7 days ago" showCTA={issue.id !== "i1"} siteUrl={site.url} />
-                <EvidenceShot label="Current · today 09:14" showCTA={false} highlight={issue.id === "i1"} siteUrl={site.url} />
+                <EvidenceShot label="Baseline" showCTA siteUrl={site.url} />
+                <EvidenceShot label="Current scan" showCTA={false} siteUrl={site.url} />
               </div>
-              
-              {issue.id === "i1" && (
+
+              {hasEvidence && (
                 <div style={{ marginTop: 14, padding: "12px 14px", background: "var(--bg-inset)", border: "1px solid var(--border-soft)", borderRadius: 10 }}>
-                  <div className="label-strip" style={{ marginBottom: 6 }}>Detected diff</div>
-                  <code style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text-secondary)", display: "block", whiteSpace: "pre-wrap" }}>
-{`- <a class="hero-cta primary" href="/get-started">Open an account</a>
-+ <a class="hero-cta primary u-hide-mobile" href="/get-started">Open an account</a>`}
+                  <div className="label-strip" style={{ marginBottom: 6 }}>Detected change region</div>
+                  <code style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text-secondary)", display: "block" }}>
+                    {JSON.stringify(issue.evidence, null, 2)}
                   </code>
-                  <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-tertiary)" }}>
-                    Class <span className="mono" style={{ color: "var(--gold)" }}>.u-hide-mobile</span> was added by theme update v4.6.10 (yesterday 12:04).
-                  </div>
                 </div>
               )}
 
-              {issue.id === "i2" && (
+              {!hasEvidence && (
                 <div style={{ marginTop: 14, padding: "12px 14px", background: "var(--bg-inset)", border: "1px solid var(--border-soft)", borderRadius: 10 }}>
-                  <div className="label-strip" style={{ marginBottom: 6 }}>Detected error log</div>
-                  <code style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text-secondary)", display: "block", whiteSpace: "pre-wrap" }}>
-{`POST https://acmefinance.co.za/wp-admin/admin-ajax.php 500 (Internal Server Error)
-  action: submit_lead_form
-  payload: { "name": "Horus Scout", "email": "scout@eyeofhorus.dev" }`}
-                  </code>
-                  <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-tertiary)" }}>
-                    Triggered by Form-Pro update v4.2.1. Forms are unable to serialize submissions due to variable type mismatches.
+                  <div className="label-strip" style={{ marginBottom: 6 }}>Detection method</div>
+                  <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                    {issue.changeType} · {issue.confidence}% confidence
                   </div>
                 </div>
               )}
@@ -250,31 +269,40 @@ export default function IssueDetailPage({ params }: PageProps) {
             <div className="card-pad">
               <div className="timeline">
                 <div className="timeline-item crit">
-                  <div className="timeline-time">Today · 09:14</div>
-                  <div className="timeline-text">Horus detected component discrepancy on page template</div>
+                  <div className="timeline-time">{issue.detected}</div>
+                  <div className="timeline-text">Horus detected: {issue.changeType} on {issue.page}</div>
                 </div>
                 <div className="timeline-item warn">
-                  <div className="timeline-time">Today · 09:16</div>
-                  <div className="timeline-text">Severity level raised to {issue.severity} · matches conversion-path heuristic</div>
+                  <div className="timeline-time">{issue.detected}</div>
+                  <div className="timeline-text">Severity set to {issue.severity} · category: {issue.category}</div>
                 </div>
                 {issue.owner !== "Unassigned" && (
                   <div className="timeline-item">
-                    <div className="timeline-time">Today · 09:42</div>
-                    <div className="timeline-text">Assigned to {issue.owner} · status moved to {issue.status}</div>
+                    <div className="timeline-time">—</div>
+                    <div className="timeline-text">Assigned to {issue.owner} · status: {issue.status}</div>
                   </div>
                 )}
                 {notesList.map((n, idx) => (
                   <div className="timeline-item ok" key={idx}>
                     <div className="timeline-time">{n.date}</div>
                     <div className="timeline-text">
-                      <strong>{n.author}</strong>: "{n.text}"
+                      <strong>{n.author}</strong>: &quot;{n.text}&quot;
                     </div>
                   </div>
                 ))}
               </div>
 
               <form onSubmit={handlePostNote} style={{ marginTop: 18, display: "flex", gap: 10, alignItems: "flex-start" }}>
-                <div className="avatar" style={{ width: 30, height: 30, fontSize: 11 }}>MP</div>
+                <div
+                  style={{
+                    width: 30, height: 30, borderRadius: 8, display: "grid", placeItems: "center",
+                    fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 11,
+                    background: "rgba(0,229,255,0.10)", border: "1px solid rgba(0,229,255,0.25)",
+                    color: "var(--cyan)", flexShrink: 0,
+                  }}
+                >
+                  {userInitials}
+                </div>
                 <div style={{ flex: 1 }}>
                   <textarea
                     value={note}
@@ -282,24 +310,13 @@ export default function IssueDetailPage({ params }: PageProps) {
                     placeholder="Add a note — visible to your team only."
                     rows={2}
                     style={{
-                      width: "100%",
-                      padding: 10,
-                      fontSize: 13,
-                      background: "var(--bg-inset)",
-                      border: "1px solid var(--border-mid)",
-                      borderRadius: 10,
-                      color: "var(--text-primary)",
-                      resize: "vertical",
-                      outline: "none",
+                      width: "100%", padding: 10, fontSize: 13,
+                      background: "var(--bg-inset)", border: "1px solid var(--border-mid)",
+                      borderRadius: 10, color: "var(--text-primary)", resize: "vertical", outline: "none",
                     }}
                   />
                   <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8, gap: 8 }}>
-                    <button className="btn ghost sm" type="button" onClick={() => alert("Attachment added")}>
-                      Attach file
-                    </button>
-                    <button className="btn primary sm" type="submit">
-                      Post note
-                    </button>
+                    <button className="btn primary sm" type="submit">Post note</button>
                   </div>
                 </div>
               </form>
@@ -322,9 +339,7 @@ export default function IssueDetailPage({ params }: PageProps) {
                   style={{ width: "100%" }}
                 >
                   {statuses.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
+                    <option key={s} value={s}>{s}</option>
                   ))}
                 </select>
               </PanelField>
@@ -335,10 +350,8 @@ export default function IssueDetailPage({ params }: PageProps) {
                   onChange={(e) => handleOwnerChange(e.target.value)}
                   style={{ width: "100%" }}
                 >
-                  {owners.map((o) => (
-                    <option key={o} value={o}>
-                      {o}
-                    </option>
+                  {teamMembers.map((o) => (
+                    <option key={o} value={o}>{o}</option>
                   ))}
                 </select>
               </PanelField>
@@ -346,9 +359,7 @@ export default function IssueDetailPage({ params }: PageProps) {
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <SeverityChip level={issue.severity} />
                   <div className={`severity-meter ${issue.severity}`}>
-                    {[...Array(5)].map((_, i) => (
-                      <span key={i} />
-                    ))}
+                    {[...Array(5)].map((_, i) => <span key={i} />)}
                   </div>
                 </div>
               </PanelField>
@@ -358,9 +369,7 @@ export default function IssueDetailPage({ params }: PageProps) {
               <PanelField label="Tags">
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                   <Badge tone="ghost">{issue.category}</Badge>
-                  <Badge tone="ghost">mobile</Badge>
-                  <Badge tone="ghost">conversion</Badge>
-                  <Badge tone="ghost">theme-update</Badge>
+                  <Badge tone="ghost">{issue.changeType}</Badge>
                 </div>
               </PanelField>
 
@@ -368,12 +377,12 @@ export default function IssueDetailPage({ params }: PageProps) {
 
               <button
                 className="btn primary full"
-                onClick={() => alert("Escalated to client portal and Slack announcement posted.")}
+                onClick={() => alert("Escalated. Update your client-facing report to include this issue.")}
                 type="button"
               >
                 Escalate to client-facing
               </button>
-              <button className="btn full" onClick={() => alert("Muted alerts for 24 hours.")} type="button">
+              <button className="btn full" onClick={() => alert("Alerts snoozed for 24 hours.")} type="button">
                 Snooze · 24 hours
               </button>
             </div>
@@ -391,16 +400,12 @@ export default function IssueDetailPage({ params }: PageProps) {
                 </dd>
                 <dt>Page</dt>
                 <dd className="mono">{issue.page}</dd>
-                <dt>Viewports</dt>
-                <dd>iPhone 14, Pixel 7, iPad Mini</dd>
                 <dt>First seen</dt>
                 <dd className="mono">{issue.detected}</dd>
                 <dt>Detector</dt>
-                <dd>Visual diff · DOM diff</dd>
-                <dt>Related</dt>
-                <dd>
-                  <Badge tone="med">Theme update yesterday</Badge>
-                </dd>
+                <dd>{issue.changeType}</dd>
+                <dt>Confidence</dt>
+                <dd>{issue.confidence}%</dd>
               </dl>
             </div>
           </div>
@@ -410,34 +415,18 @@ export default function IssueDetailPage({ params }: PageProps) {
               <Icon name="sparkles" size={11} /> Suggested fix
             </span>
             <div style={{ marginTop: 8, fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-              {issue.id === "i1" ? (
-                <>
-                  Remove <span className="mono" style={{ color: "var(--gold)" }}>.u-hide-mobile</span> from the hero CTA in <span className="mono" style={{ color: "var(--cyan)" }}>header-hero.php</span> (Astra child theme). Or override in custom CSS to display this element on mobile breakpoints.
-                </>
-              ) : issue.id === "i2" ? (
-                <>
-                  Disable the update for plugin <span className="mono" style={{ color: "var(--cyan)" }}>Form-Pro</span>. Restore configuration back to <span className="mono" style={{ color: "var(--gold)" }}>4.1.9</span> while developer checks validation filters.
-                </>
-              ) : (
-                <>
-                  Review recently modified CSS files or template files. Check if custom styles conflict with layout frameworks or breakpoints.
-                </>
-              )}
+              {issue.recommended}
             </div>
             <button
               className="btn primary sm"
               style={{ marginTop: 12 }}
               onClick={() => {
-                navigator.clipboard.writeText(
-                  issue.id === "i1" 
-                    ? `@media (max-width: 767px) { .hero-cta.primary.u-hide-mobile { display: inline-block !important; } }`
-                    : `wp plugin install form-pro --version=4.1.9 --force`
-                );
-                alert("Patch code copied to clipboard!");
+                navigator.clipboard.writeText(issue.recommended);
+                alert("Recommendation copied to clipboard.");
               }}
               type="button"
             >
-              <Icon name="code" size={12} /> Copy patch
+              <Icon name="code" size={12} /> Copy recommendation
             </button>
           </div>
         </div>
@@ -448,34 +437,24 @@ export default function IssueDetailPage({ params }: PageProps) {
 
 const MiniStat = ({ label, value }: { label: string; value: string }) => (
   <div style={{ padding: 12, background: "rgba(255,255,255,0.025)", border: "1px solid var(--border-soft)", borderRadius: 10 }}>
-    <div className="label-strip" style={{ marginBottom: 4 }}>
-      {label}
-    </div>
+    <div className="label-strip" style={{ marginBottom: 4 }}>{label}</div>
     <div style={{ fontSize: 13, color: "var(--text-primary)", lineHeight: 1.4 }}>{value}</div>
   </div>
 );
 
 const PanelField = ({ label, children }: { label: string; children: React.ReactNode }) => (
   <div>
-    <div className="label-strip" style={{ marginBottom: 6 }}>
-      {label}
-    </div>
+    <div className="label-strip" style={{ marginBottom: 6 }}>{label}</div>
     {children}
   </div>
 );
 
-const EvidenceShot = ({ label, showCTA, highlight, siteUrl }: { label: string; showCTA: boolean; highlight?: boolean; siteUrl: string }) => (
+const EvidenceShot = ({ label, showCTA, siteUrl }: { label: string; showCTA: boolean; siteUrl: string }) => (
   <div>
-    <div className="label-strip" style={{ marginBottom: 8 }}>
-      {label}
-    </div>
+    <div className="label-strip" style={{ marginBottom: 8 }}>{label}</div>
     <div className="evidence-shot" style={{ position: "relative" }}>
       <div className="vp-head" style={{ height: 24, background: "rgba(255,255,255,0.04)" }}>
-        <div className="vp-dots">
-          <span />
-          <span />
-          <span />
-        </div>
+        <div className="vp-dots"><span /><span /><span /></div>
         <div className="vp-url">{siteUrl}</div>
       </div>
       <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10, height: "calc(100% - 24px)" }}>
@@ -484,27 +463,8 @@ const EvidenceShot = ({ label, showCTA, highlight, siteUrl }: { label: string; s
         <div className="mock-block p s" />
         <div className="mock-block img" style={{ minHeight: 80 }} />
         {showCTA && <div className="mock-block btn-pri" style={{ background: "var(--gold)" }} />}
-        {!showCTA && highlight && (
-          <div
-            style={{
-              border: "2px dashed var(--red)",
-              borderRadius: 6,
-              padding: 10,
-              background: "rgba(239,68,68,0.08)",
-              color: "#FCA5A5",
-              fontSize: 11.5,
-              fontFamily: "var(--font-mono)",
-              textAlign: "center",
-            }}
-          >
-            missing element · "Open an account" CTA
-          </div>
-        )}
         <div className="mock-block p s" />
       </div>
-      {highlight && (
-        <div className="hi" style={{ left: "12%", top: "62%", width: "55%", height: "12%" }} />
-      )}
     </div>
   </div>
 );

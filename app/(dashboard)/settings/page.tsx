@@ -208,38 +208,47 @@ export default function SettingsPage() {
               </button>
             </div>
             <div>
-              {sites.slice(0, 4).map((s) => (
-                <div
-                  key={s.id}
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr auto auto auto auto",
-                    gap: 14,
-                    alignItems: "center",
-                    padding: "14px 18px",
-                    borderBottom: "1px solid var(--border-soft)",
-                  }}
-                >
-                  <div className="site-cell">
-                    <Favicon site={s} />
-                    <div>
-                      <div className="site-name">{s.name}</div>
-                      <div className="site-url">{s.url}</div>
+              {sites.length === 0 ? (
+                <div className="empty" style={{ padding: "24px 18px" }}>
+                  No sites added yet. Click &quot;Add site&quot; to get started.
+                </div>
+              ) : (
+                sites.slice(0, 4).map((s) => (
+                  <div
+                    key={s.id}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr auto auto auto auto",
+                      gap: 14,
+                      alignItems: "center",
+                      padding: "14px 18px",
+                      borderBottom: "1px solid var(--border-soft)",
+                    }}
+                  >
+                    <div className="site-cell">
+                      <Favicon site={s} />
+                      <div>
+                        <div className="site-name">{s.name}</div>
+                        <div className="site-url">{s.url}</div>
+                      </div>
                     </div>
+                    <Badge tone="ghost">3 viewports</Badge>
+                    <Badge tone={s.status === "healthy" ? "ok" : s.status === "critical" ? "crit" : "high"} dot>
+                      {s.status.charAt(0).toUpperCase() + s.status.slice(1)}
+                    </Badge>
+                    <button className="btn ghost sm" onClick={() => alert(`Configuring ${s.name}…`)} type="button">
+                      Configure
+                    </button>
                   </div>
-                  <Badge tone="ghost">18 pages</Badge>
-                  <Badge tone="ghost">3 viewports</Badge>
-                  <Badge tone="ok">Active</Badge>
-                  <button className="btn ghost sm" onClick={() => alert(`Configuring custom selectors for ${s.name}...`)} type="button">
-                    Configure
+                ))
+              )}
+              {sites.length > 4 && (
+                <div style={{ padding: "12px 18px", textAlign: "center" }}>
+                  <button className="btn ghost sm" onClick={() => alert(`Showing all ${sites.length} sites…`)} type="button">
+                    View all {sites.length} sites
                   </button>
                 </div>
-              ))}
-              <div style={{ padding: "12px 18px", textAlign: "center" }}>
-                <button className="btn ghost sm" onClick={() => alert("Showing all sites list page...")} type="button">
-                  View all {sites.length} sites
-                </button>
-              </div>
+              )}
             </div>
           </div>
 
@@ -249,7 +258,7 @@ export default function SettingsPage() {
               <h3>
                 <Icon name="refresh" size={14} /> Scan schedule
               </h3>
-              <span className="h-sub">applies to: Acme Finance</span>
+              <span className="h-sub">global defaults</span>
             </div>
             <div className="card-pad">
               <SettingRow
@@ -271,9 +280,9 @@ export default function SettingsPage() {
                 control={
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <Badge tone="ghost" lg>
-                      18 pages
+                      per site
                     </Badge>
-                    <button className="btn sm" onClick={() => alert("Loading site URL audit tree...")} type="button">
+                    <button className="btn sm" onClick={() => alert("Open site detail to manage page list.")} type="button">
                       Edit list
                     </button>
                   </div>
@@ -294,9 +303,9 @@ export default function SettingsPage() {
                 title="Authenticated areas"
                 desc="Provide a test login so Horus can scan logged-in pages."
                 control={
-                  <Badge tone="ok" dot>
-                    Configured · test user
-                  </Badge>
+                  <button className="btn sm" onClick={() => alert("Configure test credentials per site in Site settings.")} type="button">
+                    Configure
+                  </button>
                 }
               />
             </div>
@@ -351,12 +360,12 @@ export default function SettingsPage() {
               </h3>
             </div>
             <div className="card-pad">
-              <AlertRule severity="critical" trigger="Critical issue detected" channels="Slack #wetpaint-alerts · Email QA Lead · SMS on-call" />
-              <AlertRule severity="high" trigger="High severity issue · client-facing impact" channels="Slack #wetpaint-alerts · Email QA Lead" />
-              <AlertRule severity="medium" trigger="Visual change detected · awaiting review" channels="Daily digest · 09:00" />
+              <AlertRule severity="critical" trigger="Critical issue detected" channels="Email alert recipients · WhatsApp if configured" />
+              <AlertRule severity="high" trigger="High severity issue · client-facing impact" channels="Email alert recipients" />
+              <AlertRule severity="medium" trigger="Visual change detected · awaiting review" channels="Daily digest" />
               <AlertRule severity="info" trigger="WordPress update available · low risk" channels="Weekly digest" />
               <div style={{ marginTop: 12 }}>
-                <button className="btn ghost sm" onClick={() => alert("Open alert template manager...")} type="button">
+                <button className="btn ghost sm" onClick={() => alert("Custom alert rules coming soon.")} type="button">
                   <Icon name="plus" size={12} /> Add custom rule
                 </button>
               </div>
@@ -371,7 +380,7 @@ export default function SettingsPage() {
               </h3>
             </div>
             <div className="card-pad">
-              <ChannelRow icon="code" label="Slack" sub="Connected · #wetpaint-alerts" on={toggles.slack} onToggle={() => flip("slack")} />
+              <ChannelRow icon="code" label="Slack" sub="Configure via SLACK_WEBHOOK_URL environment variable" on={toggles.slack} onToggle={() => flip("slack")} />
               <ChannelRow
                 icon="file"
                 label="Email"
@@ -386,7 +395,7 @@ export default function SettingsPage() {
                 on={alertSettings?.whatsapp_alerts_enabled ?? toggles.sms}
                 onToggle={() => alertSettings ? saveAlertSettings({ whatsapp_alerts_enabled: !alertSettings.whatsapp_alerts_enabled }) : flip("sms")}
               />
-              <ChannelRow icon="link" label="Webhook" sub="https://hooks.wetpaint.co.za/horus" on={toggles.webhook} onToggle={() => flip("webhook")} />
+              <ChannelRow icon="link" label="Webhook" sub="Configure endpoint URL in environment variables" on={toggles.webhook} onToggle={() => flip("webhook")} />
             </div>
           </div>
 

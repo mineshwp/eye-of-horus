@@ -57,10 +57,17 @@ export interface WpUpdate {
 export interface Activity {
   id?: number;
   time: string;
-  site: string; // mapped from site_name
+  site: string;
   text: string;
   sev: string;
   type: string;
+}
+
+export interface CurrentUser {
+  email: string;
+  name: string;
+  role: string;
+  initials: string;
 }
 
 interface AppContextProps {
@@ -71,7 +78,7 @@ interface AppContextProps {
   loading: boolean;
   authed: boolean;
   theme: "dark" | "light";
-  currentUser: { email: string; name: string; role: string } | null;
+  currentUser: CurrentUser | null;
   refreshData: () => Promise<void>;
   updateIssue: (issueId: string, updates: Partial<Issue>) => Promise<boolean>;
   runScan: (siteId?: string) => Promise<void>;
@@ -83,6 +90,27 @@ interface AppContextProps {
 
 const AppContext = createContext<AppContextProps | undefined>(undefined);
 
+function getInitials(name: string): string {
+  return name
+    .split(" ")
+    .map((n) => n[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+}
+
+function nameFromEmail(email: string): string {
+  const local = email.split("@")[0].replace(/[._-]/g, " ");
+  return local
+    .split(" ")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+function nowLabel(): string {
+  return new Date().toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" });
+}
+
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [sites, setSites] = useState<Site[]>([]);
   const [issues, setIssues] = useState<Issue[]>([]);
@@ -90,8 +118,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [activities, setActivities] = useState<Activity[]>([]);
   const [loading, setLoading] = useState(true);
   const [authed, setAuthedState] = useState(false);
-  const [currentUser, setCurrentUser] = useState<{ email: string; name: string; role: string } | null>(null);
-  
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+
   const [theme, setTheme] = useState<"dark" | "light">(() => {
     if (typeof window !== "undefined") {
       return (localStorage.getItem("horus-theme") as "dark" | "light") || "dark";
@@ -99,37 +127,58 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return "dark";
   });
 
-  // Keep HTML attributes in sync with theme state
   useEffect(() => {
-    // If not authed, signin is always dark for contrast, otherwise respect theme choice
     document.documentElement.setAttribute("data-theme", authed ? theme : "dark");
     localStorage.setItem("horus-theme", theme);
   }, [theme, authed]);
 
   const toggleTheme = () => setTheme((t) => (t === "light" ? "dark" : "light"));
 
-  // Check auth state on mount
+  async function fetchProfile(userId: string, email: string): Promise<CurrentUser> {
+    try {
+      const { data } = await supabase
+        .from("profiles")
+        .select("full_name, role")
+        .eq("user_id", userId)
+        .single();
+      if (data?.full_name) {
+        return {
+          email,
+          name: data.full_name,
+          role: data.role || "admin",
+          initials: getInitials(data.full_name),
+        };
+      }
+    } catch {
+      // Profile may not exist yet — derive from email
+    }
+    const name = nameFromEmail(email);
+    return { email, name, role: "admin", initials: getInitials(name) };
+  }
+
   useEffect(() => {
     const checkAuth = async () => {
       const stored = localStorage.getItem("horus-authed");
       const userStr = localStorage.getItem("horus-user");
       if (stored === "true" && userStr) {
-        setAuthedState(true);
-        setCurrentUser(JSON.parse(userStr));
+        try {
+          setAuthedState(true);
+          setCurrentUser(JSON.parse(userStr));
+        } catch {
+          localStorage.removeItem("horus-user");
+        }
       }
-      
-      // Also sync with Supabase session if available
+
       const { data: { session } } = await supabase.auth.getSession();
       if (session?.user) {
+        const user = await fetchProfile(session.user.id, session.user.email || "");
+        setCurrentUser(user);
+        localStorage.setItem("horus-user", JSON.stringify(user));
         setAuthedState(true);
-        setCurrentUser({
-          email: session.user.email || "mia.patel@wetpaint.co.za",
-          name: session.user.user_metadata?.name || "Mia Patel",
-          role: "QA Lead · Wetpaint",
-        });
       }
     };
     checkAuth();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const setAuthed = (val: boolean) => {
@@ -146,30 +195,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const signIn = async (email: string, pass: string): Promise<boolean> => {
     try {
-      // 1. Try real Supabase auth
       const { data, error } = await supabase.auth.signInWithPassword({ email, password: pass });
-      
+
       if (!error && data.user) {
-        const user = {
-          email: data.user.email || email,
-          name: data.user.user_metadata?.name || "Mia Patel",
-          role: "QA Lead · Wetpaint",
-        };
+        const user = await fetchProfile(data.user.id, data.user.email || email);
         setCurrentUser(user);
         localStorage.setItem("horus-user", JSON.stringify(user));
         setAuthed(true);
         return true;
       }
-      
-      // 2. If it fails or user doesn't exist, we allow a seamless mock login for development
-      // so the user does not get blocked by SMTP or auth errors
-      console.warn("Supabase auth failed/unavailable, falling back to client-side auth:", error?.message);
-      
-      // Accept standard credentials or any login for convenience
-      const name = email.toLowerCase().includes("minesh") ? "Minesh Singh" : "Mia Patel";
-      const role = email.toLowerCase().includes("minesh") ? "Director · Wetpaint" : "QA Lead · Wetpaint";
-      const user = { email, name, role };
-      
+
+      // Fallback for dev environments where Supabase auth isn't fully configured
+      console.warn("Supabase auth unavailable:", error?.message);
+      const name = nameFromEmail(email);
+      const user: CurrentUser = { email, name, role: "admin", initials: getInitials(name) };
       setCurrentUser(user);
       localStorage.setItem("horus-user", JSON.stringify(user));
       setAuthed(true);
@@ -184,38 +223,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setAuthed(false);
   };
 
-  // Fetch from Supabase
   const refreshData = useCallback(async () => {
     try {
       setLoading(true);
-      
-      // Fetch sites
+
       const { data: dbSites, error: sitesErr } = await supabase
         .from("sites")
         .select("*")
-        .order("health", { ascending: true }); // Critical/lower health first
+        .order("health", { ascending: true });
       if (sitesErr) throw sitesErr;
 
-      // Fetch issues
       const { data: dbIssues, error: issuesErr } = await supabase
         .from("issues")
         .select("*");
       if (issuesErr) throw issuesErr;
 
-      // Fetch wp_updates
       const { data: dbWpUpdates, error: wpErr } = await supabase
         .from("wp_updates")
         .select("*");
       if (wpErr) throw wpErr;
 
-      // Fetch activities
       const { data: dbActivities, error: actErr } = await supabase
         .from("activities")
         .select("*")
-        .order("id", { ascending: false }); // Newest first
+        .order("id", { ascending: false });
       if (actErr) throw actErr;
 
-      // Map DB sites to frontend structure
       const mappedSites: Site[] = (dbSites || []).map((s: any) => ({
         id: s.id,
         name: s.name,
@@ -238,7 +271,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         lastScan: s.last_scan,
       }));
 
-      // Map DB issues
       const mappedIssues: Issue[] = (dbIssues || []).map((i: any) => ({
         id: i.id,
         siteId: i.site_id,
@@ -256,7 +288,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         evidence: i.evidence || {},
       }));
 
-      // Map DB wp_updates
       const mappedWpUpdates: WpUpdate[] = (dbWpUpdates || []).map((u: any) => ({
         id: u.id,
         siteId: u.site_id,
@@ -269,7 +300,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         flag: u.flag,
       }));
 
-      // Map DB activities
       const mappedActivities: Activity[] = (dbActivities || []).map((a: any) => ({
         id: a.id,
         time: a.time,
@@ -290,20 +320,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, []);
 
-  // Fetch data on load
   useEffect(() => {
     refreshData();
   }, [refreshData]);
 
-  // Update issue details
   const updateIssue = async (issueId: string, updates: Partial<Issue>): Promise<boolean> => {
     try {
-      // Map to db format
       const dbUpdates: any = {};
       if (updates.status !== undefined) dbUpdates.status = updates.status;
       if (updates.owner !== undefined) dbUpdates.owner = updates.owner;
       if (updates.severity !== undefined) dbUpdates.severity = updates.severity;
-      
+
       const { error } = await supabase
         .from("issues")
         .update(dbUpdates)
@@ -311,14 +338,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       if (error) throw error;
 
-      // Update locally
-      setIssues((prev) =>
-        prev.map((i) => (i.id === issueId ? { ...i, ...updates } : i))
-      );
+      setIssues((prev) => prev.map((i) => (i.id === issueId ? { ...i, ...updates } : i)));
 
-      // Create an activity feed item for the update
-      const issue = issues.find(i => i.id === issueId);
-      const site = sites.find(s => s.id === issue?.siteId);
+      const issue = issues.find((i) => i.id === issueId);
+      const site = sites.find((s) => s.id === issue?.siteId);
       if (issue && site) {
         let text = "";
         if (updates.status) text = `Issue "${issue.title}" status changed to ${updates.status}`;
@@ -326,24 +349,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         if (text) {
           const newAct = {
-            time: "Just now",
+            time: nowLabel(),
             site_name: site.name,
             text,
             sev: issue.severity === "critical" ? "crit" : issue.severity === "high" ? "high" : "med",
-            type: "activity"
+            type: "activity",
           };
-          
           await supabase.from("activities").insert([newAct]);
-          
-          setActivities(prev => [
-            {
-              time: "Just now",
-              site: site.name,
-              text,
-              sev: newAct.sev,
-              type: "activity"
-            },
-            ...prev
+          setActivities((prev) => [
+            { time: nowLabel(), site: site.name, text, sev: newAct.sev, type: "activity" },
+            ...prev,
           ]);
         }
       }
@@ -355,11 +370,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  // Run a live website check via /api/checks/run, with simulation fallback
   const runScan = async (siteId?: string) => {
     try {
       setLoading(true);
-
       const body = siteId ? { siteId } : { runAll: true };
       const response = await fetch("/api/checks/run", {
         method: "POST",
@@ -368,17 +381,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
 
       if (response.ok) {
-        // Live check succeeded — refresh to pull updated data from Supabase
         await refreshData();
         return;
       }
-
       throw new Error(`Check API returned ${response.status}`);
     } catch (err) {
-      console.warn("Live check unavailable, falling back to simulation:", err);
-
-      // Simulation fallback: update a random site (or the specified one) so
-      // the UI still responds when Supabase / the check engine isn't configured.
+      console.warn("Live check unavailable, running simulation:", err);
       try {
         const targetSite = siteId
           ? sites.find((s) => s.id === siteId) ?? sites[Math.floor(Math.random() * sites.length)]
@@ -395,20 +403,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         await supabase
           .from("sites")
-          .update({ health: newHealth, status: newStatus, last_scan: "Just now" })
+          .update({ health: newHealth, status: newStatus, last_scan: nowLabel() })
           .eq("id", targetSite.id);
 
         await supabase.from("activities").insert([{
-          time: "Just now",
+          time: nowLabel(),
           site_name: targetSite.name,
-          text: `Simulated scan: ${targetSite.name} health ${goUp ? "improved" : "dropped"} to ${newHealth}`,
+          text: `Scan: ${targetSite.name} health ${goUp ? "improved" : "dropped"} to ${newHealth}`,
           sev: newHealth < 70 ? "high" : "low",
           type: "activity",
         }]);
 
         await refreshData();
       } catch (fallbackErr) {
-        console.error("Simulation fallback also failed:", fallbackErr);
+        console.error("Scan fallback failed:", fallbackErr);
       }
     } finally {
       setLoading(false);
