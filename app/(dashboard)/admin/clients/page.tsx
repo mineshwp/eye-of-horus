@@ -88,8 +88,8 @@ export default function AdminClientsPage() {
     e.preventDefault();
     setAddError("");
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
         setAddError("Session expired. Please sign out and sign in again.");
         return;
       }
