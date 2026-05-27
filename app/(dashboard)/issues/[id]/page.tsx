@@ -54,6 +54,8 @@ export default function IssueDetailPage({ params }: PageProps) {
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [teamMembers, setTeamMembers] = useState<string[]>(["Unassigned"]);
+  const [toast, setToast] = useState<string | null>(null);
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
 
   useEffect(() => {
     if (issue) {
@@ -188,7 +190,7 @@ export default function IssueDetailPage({ params }: PageProps) {
           <button className="btn" onClick={handleQuickIgnore} type="button">
             <Icon name="x" size={13} /> Ignore
           </button>
-          <button className="btn" onClick={() => alert("Create a task in your project management tool.")} type="button">
+          <button className="btn" onClick={() => showToast("Create task: copy the issue title into your project management tool.")} type="button">
             <Icon name="plus" size={13} /> Create task
           </button>
           <button className="btn primary" onClick={handleQuickResolve} type="button">
@@ -378,12 +380,12 @@ export default function IssueDetailPage({ params }: PageProps) {
 
               <button
                 className="btn primary full"
-                onClick={() => alert("Escalated. Update your client-facing report to include this issue.")}
+                onClick={() => showToast("Issue escalated — add it to the next client-facing report.")}
                 type="button"
               >
                 Escalate to client-facing
               </button>
-              <button className="btn full" onClick={() => alert("Alerts snoozed for 24 hours.")} type="button">
+              <button className="btn full" onClick={() => showToast("Alerts snoozed for 24 hours.")} type="button">
                 Snooze · 24 hours
               </button>
             </div>
@@ -423,7 +425,7 @@ export default function IssueDetailPage({ params }: PageProps) {
               style={{ marginTop: 12 }}
               onClick={() => {
                 navigator.clipboard.writeText(issue.recommended);
-                alert("Recommendation copied to clipboard.");
+                showToast("Recommendation copied to clipboard.");
               }}
               type="button"
             >
@@ -432,6 +434,10 @@ export default function IssueDetailPage({ params }: PageProps) {
           </div>
         </div>
       </div>
+
+      {toast && (
+        <div style={{ position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)", background: "var(--bg-card)", border: "1px solid var(--border-soft)", borderRadius: 10, padding: "10px 20px", fontSize: 13, fontWeight: 500, color: "var(--text-primary)", boxShadow: "0 4px 24px rgba(0,0,0,0.5)", zIndex: 9999, pointerEvents: "none" }}>{toast}</div>
+      )}
     </div>
   );
 }

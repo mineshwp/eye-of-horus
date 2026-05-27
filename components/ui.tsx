@@ -352,8 +352,11 @@ export const Sparkline: React.FC<SparklineProps> = ({ points, color = "#00E5FF",
   const min = Math.min(...points),
     max = Math.max(...points);
   const range = max - min || 1;
-  const stepX = w / (points.length - 1);
-  const coords = points.map((p, i) => [i * stepX, h - ((p - min) / range) * (h - 6) - 3]);
+  const stepX = points.length > 1 ? w / (points.length - 1) : 0;
+  const coords = points.map((p, i) => [
+    points.length > 1 ? i * stepX : w / 2,
+    h - ((p - min) / range) * (h - 6) - 3,
+  ]);
   const path = coords.map((c, i) => `${i === 0 ? "M" : "L"}${c[0].toFixed(1)},${c[1].toFixed(1)}`).join(" ");
   const area = `${path} L${w},${h} L0,${h} Z`;
   const gradId = `g-${color.replace("#", "")}-${points[0]}`;

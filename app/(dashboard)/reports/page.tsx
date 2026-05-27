@@ -24,9 +24,11 @@ interface GeneratedReport {
 }
 
 export default function ReportsPage() {
-  const { sites, issues, wpUpdates } = useApp();
+  const { sites } = useApp();
   const [tab, setTab] = useState("Weekly summary");
   const tabs = ["Weekly summary", "Client-ready", "Internal dev", "Trends", "Generated"];
+  const [toast, setToast] = useState<string | null>(null);
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
   const [generating, setGenerating] = useState(false);
   const [generatedReports, setGeneratedReports] = useState<GeneratedReport[]>([]);
   const [generateError, setGenerateError] = useState<string | null>(null);
@@ -53,7 +55,7 @@ export default function ReportsPage() {
   };
 
   const handleGenerateReport = async () => {
-    if (!sites.length) { alert("Add a client site before generating a report."); return; }
+    if (!sites.length) { setGenerateError("Add a client site before generating a report."); return; }
     setGenerating(true);
     setGenerateError(null);
     const site = sites.find((s) => s.id === selectedSiteId) || sites[0];
@@ -147,7 +149,12 @@ export default function ReportsPage() {
           generating={generating}
           onGenerate={handleGenerateReport}
           error={generateError}
+          onCopyLink={showToast}
         />
+      )}
+
+      {toast && (
+        <div style={{ position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)", background: "var(--bg-card)", border: "1px solid var(--border-soft)", borderRadius: 10, padding: "10px 20px", fontSize: 13, fontWeight: 500, color: "var(--text-primary)", boxShadow: "0 4px 24px rgba(0,0,0,0.5)", zIndex: 9999, pointerEvents: "none" }}>{toast}</div>
       )}
     </div>
   );
@@ -160,11 +167,13 @@ const GeneratedReports = ({
   generating,
   onGenerate,
   error,
+  onCopyLink,
 }: {
   reports: GeneratedReport[];
   generating: boolean;
   onGenerate: () => void;
   error: string | null;
+  onCopyLink: (message: string) => void;
 }) => (
   <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
     <div className="card" style={{ padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -234,7 +243,7 @@ const GeneratedReports = ({
                     type="button"
                     onClick={() => {
                       const url = `${window.location.origin}/report/${r.share_token}`;
-                      navigator.clipboard.writeText(url).then(() => alert("Share link copied!"));
+                      navigator.clipboard.writeText(url).then(() => onCopyLink("Share link copied to clipboard."));
                     }}
                   >
                     Copy link

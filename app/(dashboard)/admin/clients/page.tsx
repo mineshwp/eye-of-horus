@@ -29,7 +29,7 @@ interface AccessRequest {
 
 export default function AdminClientsPage() {
   const router = useRouter();
-  const { sites } = useApp();
+  const { sites, refreshData } = useApp();
 
   const [clients, setClients] = useState<Client[]>([]);
   const [accessRequests, setAccessRequests] = useState<AccessRequest[]>([]);
@@ -38,6 +38,9 @@ export default function AdminClientsPage() {
   const [tab, setTab] = useState<"clients" | "access">("clients");
   const [showAddForm, setShowAddForm] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3500); };
 
   const [newClient, setNewClient] = useState({
     name: "",
@@ -45,6 +48,40 @@ export default function AdminClientsPage() {
     industry: "",
   });
   const [addError, setAddError] = useState("");
+
+  const palette = ["#3B82F6", "#22C55E", "#8B5CF6", "#F59E0B", "#00E5FF", "#EF4444", "#D9A05B"];
+
+  function normaliseUrl(url: string) {
+    return url.trim().replace(/\/+$/, "");
+  }
+
+  function slugifySiteId(name: string, websiteUrl: string) {
+    const host = websiteUrl
+      .replace(/^https?:\/\//i, "")
+      .replace(/^www\./i, "")
+      .split("/")[0];
+    const base = (host || name)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return base || `site-${Date.now()}`;
+  }
+
+  function initialsFor(name: string) {
+    const initials = name
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((part) => part[0])
+      .join("")
+      .toUpperCase()
+      .slice(0, 2);
+    return initials || "CL";
+  }
+
+  function brandFor(seed: string) {
+    const index = seed.split("").reduce((total, char) => total + char.charCodeAt(0), 0) % palette.length;
+    return palette[index];
+  }
 
   useEffect(() => {
     fetchClients();
@@ -93,18 +130,68 @@ export default function AdminClientsPage() {
         setAddError("Session expired. Please sign out and sign in again.");
         return;
       }
+      const cleanUrl = normaliseUrl(newClient.website_url);
       const { error } = await supabase.from("clients").insert([{
         name: newClient.name,
-        website_url: newClient.website_url,
+        website_url: cleanUrl,
         industry: newClient.industry || null,
         status: "active",
       }]);
       if (error) throw error;
+
+      const norm = (u: string) => u.replace(/^https?:\/\//i, "").replace(/^www\./i, "").replace(/\/$/, "").toLowerCase();
+      const existingSite = sites.find((site) => norm(site.url) === norm(cleanUrl));
+      if (!existingSite) {
+        const siteIdBase = slugifySiteId(newClient.name, cleanUrl);
+        const { data: existingIds, error: idError } = await supabase
+          .from("sites")
+          .select("id")
+          .like("id", `${siteIdBase}%`);
+        if (idError) throw idError;
+        const usedIds = new Set((existingIds || []).map((row: { id: string }) => row.id));
+        let siteId = siteIdBase;
+        let suffix = 2;
+        while (usedIds.has(siteId)) {
+          siteId = `${siteIdBase}-${suffix}`;
+          suffix += 1;
+        }
+
+        const { error: siteError } = await supabase.from("sites").insert([{
+          id: siteId,
+          name: newClient.name,
+          url: cleanUrl,
+          initials: initialsFor(newClient.name),
+          brand: brandFor(siteId),
+          health: 80,
+          status: "attention",
+          uptime: 100,
+          perf: 0,
+          sec: 0,
+          open_issues: 0,
+          wp_core: "unknown",
+          wp_core_latest: "unknown",
+          wp_plugins: 0,
+          wp_themes: 0,
+          forms: "unknown",
+          last_scan: "Not scanned yet",
+        }]);
+        if (siteError) throw siteError;
+
+        await supabase.from("activities").insert([{
+          time: new Date().toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }),
+          site_name: newClient.name,
+          text: `Client site added for monitoring: ${cleanUrl}`,
+          sev: "low",
+          type: "activity",
+        }]);
+      }
+
       setNewClient({ name: "", website_url: "", industry: "" });
       setShowAddForm(false);
-      fetchClients();
-    } catch (err: any) {
-      setAddError(err.message || "Failed to add client");
+      await fetchClients();
+      await refreshData();
+    } catch (err: unknown) {
+      setAddError(err instanceof Error ? err.message : "Failed to add client");
     }
   }
 
@@ -129,6 +216,59 @@ export default function AdminClientsPage() {
         .update({ status: "rejected" })
         .eq("id", request.id);
       fetchAccessRequests();
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function handleStartMonitoring(client: Client) {
+    setActionLoading(`monitor-${client.id}`);
+    try {
+      const cleanUrl = normaliseUrl(client.website_url);
+      const siteIdBase = slugifySiteId(client.name, cleanUrl);
+      const { data: existingIds, error: idError } = await supabase
+        .from("sites")
+        .select("id")
+        .like("id", `${siteIdBase}%`);
+      if (idError) throw idError;
+      const usedIds = new Set((existingIds || []).map((row: { id: string }) => row.id));
+      let siteId = siteIdBase;
+      let suffix = 2;
+      while (usedIds.has(siteId)) {
+        siteId = `${siteIdBase}-${suffix}`;
+        suffix += 1;
+      }
+      const { error: siteError } = await supabase.from("sites").insert([{
+        id: siteId,
+        name: client.name,
+        url: cleanUrl,
+        initials: initialsFor(client.name),
+        brand: brandFor(siteId),
+        health: 80,
+        status: "attention",
+        uptime: 100,
+        perf: 0,
+        sec: 0,
+        open_issues: 0,
+        wp_core: "unknown",
+        wp_core_latest: "unknown",
+        wp_plugins: 0,
+        wp_themes: 0,
+        forms: "unknown",
+        last_scan: "Not scanned yet",
+      }]);
+      if (siteError) throw siteError;
+      await supabase.from("activities").insert([{
+        time: new Date().toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }),
+        site_name: client.name,
+        text: `Monitoring started for ${cleanUrl}`,
+        sev: "low",
+        type: "activity",
+      }]);
+      await refreshData();
+      showToast(`Monitoring started for ${client.name}. Run a scan to collect data.`);
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : "Failed to start monitoring");
     } finally {
       setActionLoading(null);
     }
@@ -235,7 +375,7 @@ export default function AdminClientsPage() {
             <div className="empty" style={{ padding: "32px 0" }}>Loading clients...</div>
           ) : clients.length === 0 ? (
             <div className="empty" style={{ padding: "32px 0" }}>
-              No clients added yet. Click "Add client" to get started.
+              No clients added yet. Click &quot;Add client&quot; to get started.
               <br />
               <span className="dim" style={{ fontSize: 12, marginTop: 6, display: "block" }}>
                 Note: Run the Phase 1 extended migration in Supabase first if the clients table doesn&apos;t exist.
@@ -255,9 +395,10 @@ export default function AdminClientsPage() {
               </thead>
               <tbody>
                 {clients.map((client) => {
-                  const monitoredSite = sites.find(
-                    (s) => s.url === client.website_url.replace(/^https?:\/\//, "")
-                  );
+                  const norm = (u: string) =>
+                    u.replace(/^https?:\/\//i, "").replace(/^www\./i, "").replace(/\/$/, "").toLowerCase();
+                  const monitoredSite = sites.find((s) => norm(s.url) === norm(client.website_url));
+                  const isStarting = actionLoading === `monitor-${client.id}`;
                   return (
                     <tr key={client.id} className="trow">
                       <td>
@@ -285,15 +426,38 @@ export default function AdminClientsPage() {
                         {new Date(client.created_at).toLocaleDateString("en-ZA")}
                       </td>
                       <td>
-                        {monitoredSite && (
-                          <button
-                            className="btn ghost sm"
-                            onClick={() => router.push(`/sites/${monitoredSite.id}`)}
-                            type="button"
-                          >
-                            View <Icon name="chevron" size={11} />
-                          </button>
-                        )}
+                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                          {monitoredSite ? (
+                            <>
+                              <button
+                                className="btn ghost sm"
+                                onClick={() => router.push(`/sites/${monitoredSite.id}`)}
+                                type="button"
+                              >
+                                View <Icon name="chevron" size={11} />
+                              </button>
+                              <button
+                                className="btn ghost sm"
+                                onClick={() => router.push(`/sites/${monitoredSite.id}?tab=Integrations`)}
+                                type="button"
+                                title="Manage API keys & integrations"
+                              >
+                                <Icon name="settings" size={13} />
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              className="btn primary sm"
+                              onClick={() => handleStartMonitoring(client)}
+                              disabled={isStarting}
+                              type="button"
+                              title="Create monitoring entry for this client"
+                            >
+                              <Icon name="play" size={12} />
+                              {isStarting ? "Starting…" : "Start monitoring"}
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -302,6 +466,10 @@ export default function AdminClientsPage() {
             </table>
           )}
         </div>
+      )}
+
+      {toast && (
+        <div style={{ position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)", background: "var(--bg-card)", border: "1px solid var(--border-soft)", borderRadius: 10, padding: "10px 20px", fontSize: 13, fontWeight: 500, color: "var(--text-primary)", boxShadow: "0 4px 24px rgba(0,0,0,0.5)", zIndex: 9999, pointerEvents: "none" }}>{toast}</div>
       )}
 
       {/* Access requests tab */}

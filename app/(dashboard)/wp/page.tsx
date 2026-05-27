@@ -5,7 +5,6 @@ import { useApp } from "@/context/AppContext";
 import {
   Icon,
   Badge,
-  Favicon,
 } from "@/components/ui";
 
 interface ActivityRecord {
@@ -21,6 +20,8 @@ export default function WpUpdatesPage() {
   const { sites, wpUpdates, activities } = useApp();
   const [filter, setFilter] = useState("All");
   const [localUpdates, setLocalUpdates] = useState(wpUpdates);
+  const [toast, setToast] = useState<string | null>(null);
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
 
   useEffect(() => {
     setLocalUpdates(wpUpdates);
@@ -38,29 +39,29 @@ export default function WpUpdatesPage() {
   });
 
   const handleUpdate = (id: string, target: string, siteName: string) => {
-    alert(`Starting safe update process for ${target} on ${siteName}…`);
+    showToast(`Updating ${target} on ${siteName}…`);
     setTimeout(() => {
       setLocalUpdates((prev) => prev.filter((item) => item.id !== id));
-      alert(`${target} on ${siteName} updated successfully. Visual regression tests passed.`);
+      showToast(`${target} updated successfully on ${siteName}.`);
     }, 1200);
   };
 
   const handleRunSafeUpdates = () => {
     const safeUpdates = localUpdates.filter((u) => u.flag === "Safe update");
     if (safeUpdates.length === 0) {
-      alert("No safe updates in queue.");
+      showToast("No safe updates in queue.");
       return;
     }
-    alert(`Running automated updates for ${safeUpdates.length} package${safeUpdates.length !== 1 ? "s" : ""}…`);
+    showToast(`Running ${safeUpdates.length} safe update${safeUpdates.length !== 1 ? "s" : ""}…`);
     setTimeout(() => {
       const safeIds = safeUpdates.map((u) => u.id);
       setLocalUpdates((prev) => prev.filter((item) => !safeIds.includes(item.id)));
-      alert(`Updates completed: ${safeUpdates.map((u) => u.target).join(", ")}. All regression scans passed.`);
+      showToast(`${safeUpdates.length} update${safeUpdates.length !== 1 ? "s" : ""} completed successfully.`);
     }, 1500);
   };
 
   const handleStage = (target: string, siteName: string) => {
-    alert(`Staging environment ready. Deploy ${target} on staging for ${siteName} and run form scouts.`);
+    showToast(`Staging queued for ${target} on ${siteName}.`);
   };
 
   const pendingCount = localUpdates.length;
@@ -105,7 +106,17 @@ export default function WpUpdatesPage() {
           </p>
         </div>
         <div style={{ display: "flex", gap: 10 }}>
-          <button className="btn" onClick={() => alert("CSV exported successfully.")} type="button">
+          <button className="btn" onClick={() => {
+            const csv = ["Target,Site,Risk,Flag,Current,Available"].concat(
+              localUpdates.map((u) => {
+                const s = sites.find((x) => x.id === u.siteId);
+                return `"${u.target}","${s?.name ?? u.siteId}","${u.risk}","${u.flag}","${u.from ?? ""}","${u.to ?? ""}"`;
+              })
+            ).join("\n");
+            const blob = new Blob([csv], { type: "text/csv" });
+            const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "wp-updates.csv"; a.click();
+            showToast("Update queue exported to wp-updates.csv");
+          }} type="button">
             <Icon name="download" size={13} /> Export queue
           </button>
           <button className="btn primary" onClick={handleRunSafeUpdates} disabled={safeCount === 0} type="button">
@@ -234,7 +245,7 @@ export default function WpUpdatesPage() {
                     <Badge tone={flagTone}>{u.flag}</Badge>
                   </div>
                   <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                    <button className="btn ghost sm" onClick={() => alert(`${u.target} skipped for 30 days.`)} type="button">
+                    <button className="btn ghost sm" onClick={() => showToast(`${u.target} skipped for 30 days.`)} type="button">
                       Skip
                     </button>
                     <button className="btn sm" onClick={() => handleStage(u.target, site?.name ?? "")} type="button">
@@ -302,6 +313,10 @@ export default function WpUpdatesPage() {
           )}
         </div>
       </div>
+
+      {toast && (
+        <div style={{ position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)", background: "var(--bg-card)", border: "1px solid var(--border-soft)", borderRadius: 10, padding: "10px 20px", fontSize: 13, fontWeight: 500, color: "var(--text-primary)", boxShadow: "0 4px 24px rgba(0,0,0,0.5)", zIndex: 9999, pointerEvents: "none" }}>{toast}</div>
+      )}
     </div>
   );
 }

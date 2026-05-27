@@ -160,13 +160,13 @@ export default function SignIn() {
 
             <div className="field">
               <label>Password</label>
-              <div style={{ position: "relative" }}>
+              <div style={{ position: "relative", width: "100%" }}>
                 <input
                   type={showPassword ? "text" : "password"}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
-                  style={{ paddingRight: 40 }}
+                  style={{ paddingRight: 40, width: "100%" }}
                 />
                 <button
                   type="button"

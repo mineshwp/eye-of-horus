@@ -58,7 +58,10 @@ export async function POST(request: NextRequest) {
 
     if (insertError) {
       console.error("wordpress_snapshots insert error:", insertError);
-      return NextResponse.json({ error: "Failed to store snapshot" }, { status: 500 });
+      return NextResponse.json(
+        { error: "Failed to store snapshot", detail: insertError.message, code: insertError.code },
+        { status: 500 }
+      );
     }
 
     // Update site last_scan timestamp

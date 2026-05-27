@@ -29,7 +29,7 @@ async function searchAnalytics(
 ): Promise<{ rows?: unknown[]; responseAggregationType?: string }> {
   const encoded = encodeURIComponent(siteUrl);
   const res = await fetch(
-    `https://searchconsole.googleapis.com/webmasters/v3/sites/${encoded}/searchAnalytics/query`,
+    `https://www.googleapis.com/webmasters/v3/sites/${encoded}/searchAnalytics/query`,
     {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },

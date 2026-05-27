@@ -67,9 +67,11 @@ export default function Sidebar() {
           count={sites.length}
           active={pathname.startsWith("/sites")}
           onClick={() => {
-            // Find first site or default to acme
-            const firstSiteId = sites[0]?.id || "acme";
-            navigateTo(`/sites/${firstSiteId}`);
+            if (sites.length === 0) {
+              navigateTo("/admin/clients");
+            } else {
+              navigateTo(`/sites/${sites[0].id}`);
+            }
           }}
         />
         <NavItem
@@ -79,9 +81,11 @@ export default function Sidebar() {
           critical
           active={pathname.startsWith("/issues")}
           onClick={() => {
-            // Find first issue or default to i1
-            const firstIssueId = issues[0]?.id || "i1";
-            navigateTo(`/issues/${firstIssueId}`);
+            if (issues.length === 0) {
+              navigateTo("/dashboard");
+            } else {
+              navigateTo(`/issues/${issues[0].id}`);
+            }
           }}
         />
         <NavItem

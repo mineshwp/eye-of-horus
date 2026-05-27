@@ -41,15 +41,45 @@ export async function GET(request: NextRequest) {
       .single(),
     supabase
       .from('site_integrations')
-      .select('ga_property_id, gsc_site_url, clarity_project_id')
+      .select(`
+        ga_property_id, gsc_site_url, clarity_project_id,
+        ga_sync_count_today, ga_sync_count_total, ga_last_synced_at,
+        gsc_sync_count_today, gsc_sync_count_total, gsc_last_synced_at,
+        clarity_sync_count_today, clarity_sync_count_total, clarity_last_synced_at,
+        clarity_daily_limit, sync_counts_date
+      `)
       .eq('site_id', siteId)
       .single(),
   ]);
+
+  const intData = intRes.data ?? null;
+  const today = new Date().toISOString().split('T')[0];
+  const todayMatches = intData?.sync_counts_date === today;
 
   return NextResponse.json({
     ga: gaRes.data ?? null,
     gsc: gscRes.data ?? null,
     clarity: clarityRes.data ?? null,
-    integration: intRes.data ?? null,
+    integration: intData,
+    syncStats: intData
+      ? {
+          ga: {
+            today: todayMatches ? (intData.ga_sync_count_today ?? 0) : 0,
+            total: intData.ga_sync_count_total ?? 0,
+            lastSyncedAt: intData.ga_last_synced_at ?? null,
+          },
+          gsc: {
+            today: todayMatches ? (intData.gsc_sync_count_today ?? 0) : 0,
+            total: intData.gsc_sync_count_total ?? 0,
+            lastSyncedAt: intData.gsc_last_synced_at ?? null,
+          },
+          clarity: {
+            today: todayMatches ? (intData.clarity_sync_count_today ?? 0) : 0,
+            total: intData.clarity_sync_count_total ?? 0,
+            lastSyncedAt: intData.clarity_last_synced_at ?? null,
+            dailyLimit: intData.clarity_daily_limit ?? 10,
+          },
+        }
+      : null,
   });
 }

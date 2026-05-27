@@ -1,7 +1,129 @@
 # Eye of Horus — Progress Log
 
 ## Latest Update
-**2026-05-26 — Full QA pass: auth added to all API routes, bugs fixed, build clean.**
+**2026-05-27 — Analytics auto-sync schedule, per-integration rescan buttons, and sync stats UI.**
+
+### What was done this session
+
+#### DB migration — `supabase/migrations/20260527100000_integration_sync_tracking.sql`
+- Added columns to `site_integrations`: `ga_sync_count_today`, `ga_sync_count_total`, `ga_last_synced_at`, same for `gsc_` and `clarity_` prefixes, plus `clarity_daily_limit` (default 10) and `sync_counts_date` (used to reset today counters on new UTC day).
+- Seeded `analytics_sync_time = "02:00"` key into `global_settings`.
+
+#### New API — `app/api/analytics/sync-one/route.ts`
+- `POST { siteId, source: "ga"|"gsc"|"clarity" }` — runs one integration sync, writes a snapshot row, and increments `*_sync_count_today`, `*_sync_count_total`, `*_last_synced_at` on `site_integrations`.
+- Enforces Clarity daily limit (429 when limit hit). Resets today counters automatically when `sync_counts_date` differs from today UTC.
+
+#### Updated `app/api/analytics/snapshot/route.ts`
+- Now fetches and returns `syncStats` (today/total/lastSyncedAt per source, plus `clarityDailyLimit`) alongside existing ga/gsc/clarity/integration data.
+
+#### Updated `app/api/cron/daily/route.ts`
+- Added full analytics sync loop after site checks: reads `analytics_sync_time` from `global_settings`, checks ±30-minute window, then syncs GA4/GSC/Clarity for every site that has credentials. Updates counters. Respects Clarity daily limit. Results included in cron response payload as `analyticsSync`.
+
+#### Updated `app/api/admin/settings/route.ts`
+- Added `analytics_sync_time` to the list of allowed setting keys.
+
+#### IntegrationsTab — `app/(dashboard)/sites/[id]/page.tsx`
+- Added `SyncStatsPill` component: shows "Last synced X ago", "Today: N×", "Total: N".
+- Added `ClarityBalance` component: progress bar showing N / limit calls used today with colour-coded fill (green → amber → red).
+- Each analytics integration card (GA4, GSC, Clarity) now shows the stats strip and a **Sync now** button when connected. Button calls `/api/analytics/sync-one` and updates counters optimistically. Clarity button auto-disables when daily limit is reached.
+- Scan feedback messages appear below each card (green for success, red for error/limit).
+- New `syncStats` prop passed from parent into `IntegrationsTab`.
+
+#### Settings page — `app/(dashboard)/settings/page.tsx`
+- Added **Analytics auto-sync** card in Sites & scanning section.
+- Time picker (HH:MM) bound to `analyticsSyncTime` state, reads from `global_settings` on load, saves via `POST /api/admin/settings`.
+- "Sync all sites now" manual trigger button.
+- Note about updating `vercel.json` to match the configured time.
+- Fixed `SettingRow` component to accept `React.ReactNode` for the `desc` prop (was `string`).
+
+### Verification
+- `npx tsc --noEmit` — 0 errors.
+
+---
+
+**2026-05-27 — Removed all demo data; real analytics/GSC data rendering; sync status card; re-scan refresh fixed.**
+
+### What was done this session
+
+#### Demo data purge — `app/(dashboard)/sites/[id]/page.tsx`
+- **SSL fallback** — removed `site.id === "acme"` hardcoded branch. When no SSL check data exists, shows "No SSL data yet".
+- **AnalyticsTab** — removed all hardcoded Acme Finance GA data (`traffic28` array, static KPI values, fake page rows, channel bars, device split, funnel, countries, hardcoded "GA4 connected · Property G-XJ8FZP" header). Replaced with real rendering from `snapshot.ga.metrics` (`GAMetricsType`): users, sessions, pageviews, avg session, top pages, channels, devices, countries. Previous-period deltas computed dynamically. Shows "not connected" banner when no GA property configured; "no data yet" prompt when connected but no snapshot exists.
+- **SeoTab** — removed all hardcoded GSC data ("sc-domain:acmefinance.co.za", 14,820 clicks, 284k impressions, static query rows, keyword movement table, technical SEO checklist, backlink profile, page indexing cells). Replaced with real rendering from `snapshot.gsc` (`GSCMetricsType`): clicks, impressions, CTR, avg position, top queries table, striking-distance AI callout. Same connected/no-data states as AnalyticsTab. Added `gscMetrics`, `gscQueries`, `gscDelta` variables.
+- **Removed unused components** — `FunnelStep`, `KwShift`, `SeoCheck`, `IndexCell` deleted (were only used by mock sections).
+
+#### Data sync visibility — `app/(dashboard)/sites/[id]/page.tsx`
+- **New `SyncSource` component** — shows a traffic-light dot (green = has data, amber = connected but no data, grey = not connected), the source label, a relative time ("2h ago"), and an exact timestamp. Added to Shared Small Components section.
+- **New "Data sources" card** on Overview tab — six rows covering Uptime check, WordPress plugin, Google Analytics, Search Console, Microsoft Clarity, Domain check. Each row reads the real `created_at` / `checked_at` from the relevant Supabase snapshot state. This tells the team at a glance when each integration last synced.
+
+#### Re-scan now — refreshes all data sources
+- Previously the "Re-scan now" button only called `runScan(site.id)` and `fetchUptimeHistory()`.
+- Now awaits `runScan` then runs `Promise.all([fetchUptimeHistory, fetchWpSnapshot, fetchPerfMetrics, fetchFormChecks, fetchDomainCheck, fetchAnalyticsSnapshot])` so every panel reflects the latest data after a scan.
+
+#### Uptime timestamp
+- "Last check" cell in the uptime history card changed from time-only (`toLocaleTimeString` → "14:32") to full date + time (`toLocaleString` → "27 May, 14:32") so it is clear whether data is from today or days ago.
+
+#### WordPress stack card (Overview tab) — real data
+- PHP version, active theme + version, plugin count / pending updates, and detected forms now read from `wpSnapshot` instead of hardcoded values ("8.2.18", "Astra Pro 4.6.10", "27 active"). Falls back to "—" when no snapshot has been received yet.
+
+### Verification
+- `npx tsc --noEmit` — 0 errors after all changes.
+- `grep` for "acme", "14,820", "284k", "sc-domain", "G-XJ8FZP", "traffic28" in `sites/[id]/page.tsx` returns zero matches.
+
+### Pending
+- Run `20260526200000_global_settings.sql` in Supabase SQL Editor if not done yet.
+- Run `20260527100000_fix_wordpress_snapshot_rls.sql` in Supabase SQL Editor if not done yet.
+- Update `APP_URL` env var in Vercel project to `https://eye-of-horus-2point0-alpha.vercel.app`.
+
+---
+
+**Previous: 2026-05-27 — Production QA pass: add-client propagation, build blockers, UI click-through.**
+
+### What was done this session
+- Ran a production QA pass across the Next.js app after reading the local Next 16 docs in `node_modules/next/dist/docs/`.
+- **`app/(dashboard)/admin/clients/page.tsx`** — fixed the new-client flow so adding a client now also creates the matching monitored `sites` row, logs an activity, and calls `refreshData()`. This makes the new client/site appear across dashboard counts, sidebar navigation, site detail pages, reports, scans, WordPress setup, and settings flows.
+- **`app/(dashboard)/admin/clients/page.tsx`** — added URL normalization, deterministic site ID generation, initials/brand defaults, duplicate monitored-site detection, and clearer error handling for add-client failures.
+- **`app/(dashboard)/reports/page.tsx`** — fixed production build blocker where generated report share-link copy called `showToast` from the wrong scope. Copy link now receives a toast callback from the parent.
+- **`app/(dashboard)/reports/page.tsx`** — replaced the `alert()` fallback for "no sites" report generation with the existing inline error UI.
+- **`app/(dashboard)/wp/page.tsx`** — fixed production build blocker in CSV export. The page now uses the real `WpUpdate.from` / `WpUpdate.to` fields instead of stale `currentVersion` / `newVersion` names.
+- **`app/(dashboard)/wp/page.tsx`** — converted update/export feedback from blocking `alert()` calls to the same toast style used elsewhere.
+- **`components/ui.tsx`** — fixed `Sparkline` rendering invalid SVG paths (`NaN`) when it receives a single data point, which happens in low-data or newly-cleared production states.
+
+### Verification
+- `npm run build` passes cleanly across all 37 app routes.
+- Browser QA with Playwright passed using mocked Supabase/API data so production data was not mutated:
+  - Authenticated shell pages rendered without crashes: `/dashboard`, `/admin/clients`, `/settings`, `/reports`, `/wp`, `/regression`.
+  - Admin clients add/cancel flow passed.
+  - Admin clients add/save flow passed with Supabase writes mocked.
+  - Reports tabs, Settings sections, WordPress filters, Sign In, Forgot Password, Request Access navigation, and Request Access submit flow passed.
+  - Final mocked browser pass completed with no page errors and no console errors.
+- `npm run lint` was run. It still fails due to broader pre-existing project lint issues, mainly strict React hook/compiler rules, old `any` usage, and archived/mockup folders being included. Build and browser QA are green.
+
+### Pending
+- Run `20260526200000_global_settings.sql` in Supabase SQL Editor if not done yet.
+- Run `20260526100000_fix_rls_recursion.sql` in Supabase SQL Editor if not done yet.
+- Update `APP_URL` env var in Vercel project to `https://eye-of-horus-2point0-alpha.vercel.app`.
+- Consider a follow-up lint cleanup pass: exclude archived design/scratch folders from ESLint and then fix remaining production app lint errors.
+
+---
+
+**Previous: 2026-05-26 — Integrations tab + gear icon + global API keys admin.**
+
+### What was done this session
+- **`/sites/[id]/page.tsx`** — Added "Integrations" tab (11th tab) to site detail page. Tab reads `?tab=Integrations` from URL param on load. `IntegrationsTab` component handles: WordPress plugin API key (generate/rotate/copy), GA4 Property ID, GSC Site URL, Microsoft Clarity Project ID + API key. Saves to `site_integrations` table via `POST /api/analytics/integrations`.
+- **`/admin/clients/page.tsx`** — Added gear icon button on each client row. When a monitored site exists, gear links directly to `/sites/${id}?tab=Integrations`. When no site, gear is shown disabled.
+- **`/settings/page.tsx`** — Made sidebar links functional (tracks `activeSection` state). "Integrations" sidebar link now shows `GlobalApiKeysCard` section (OpenAI, Email provider, Twilio/WhatsApp). Other sections show existing content.
+- **`/api/admin/settings/route.ts`** — New `GET`/`POST` endpoint for reading/writing global API keys from `global_settings` table. Masked keys (last 4 chars shown after save). Auth required.
+- **`/supabase/migrations/20260526200000_global_settings.sql`** — New table `global_settings` (key-value, one row per setting). RLS enabled. Seeds the 7 expected keys.
+- Build passes: 0 TypeScript errors.
+
+### Pending
+- Run `20260526200000_global_settings.sql` in Supabase SQL Editor to create the global settings table.
+- Run `20260526100000_fix_rls_recursion.sql` in Supabase SQL Editor if not done yet.
+- Update `APP_URL` env var in Vercel project to `https://eye-of-horus-2point0-alpha.vercel.app`.
+
+---
+
+**Previous: 2026-05-26 — Full QA pass: auth added to all API routes, bugs fixed, build clean.**
 
 ### What was done this session (QA)
 - **`lib/auth/index.ts`** — added `getApiUser(request)` (server-side JWT validation via Supabase anon client), `unauthorizedResponse()`, and `apiFetch()` (client-side fetch wrapper that attaches Bearer token from Supabase session).

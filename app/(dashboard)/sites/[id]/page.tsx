@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect, use, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useApp, Site, Issue, WpUpdate } from "@/context/AppContext";
 import { supabase } from "@/lib/supabase";
 import { apiFetch } from "@/lib/auth/index";
@@ -10,7 +10,6 @@ import {
   Badge,
   SeverityChip,
   StatusChip,
-  ScoreBar,
   Sparkline,
   KPI,
   Tabs,
@@ -52,6 +51,34 @@ interface DomainCheckRow {
   registrar: string | null;
   error: string | null;
   checked_at: string;
+}
+
+interface PerfMetricRow {
+  id: number;
+  site_id: string;
+  device: "desktop" | "mobile" | "tablet";
+  performance_score: number | null;
+  accessibility_score: number | null;
+  seo_score: number | null;
+  best_practices_score: number | null;
+  lcp: number | null;
+  cls: number | null;
+  inp: number | null;
+  fcp: number | null;
+  tti: number | null;
+  created_at: string;
+}
+
+interface FormCheckRow {
+  id: number;
+  site_id: string;
+  form_name: string;
+  form_plugin: string | null;
+  page_url: string | null;
+  status: "pass" | "fail" | "skip" | "error";
+  submission_tested: boolean;
+  result_message: string | null;
+  created_at: string;
 }
 
 interface PageProps {
@@ -97,6 +124,11 @@ export default function SiteDetailPage({ params }: PageProps) {
     gsc: Record<string, unknown> | null;
     clarity: Record<string, unknown> | null;
     integration: { ga_property_id?: string; gsc_site_url?: string; clarity_project_id?: string } | null;
+    syncStats: {
+      ga: { today: number; total: number; lastSyncedAt: string | null };
+      gsc: { today: number; total: number; lastSyncedAt: string | null };
+      clarity: { today: number; total: number; lastSyncedAt: string | null; dailyLimit: number };
+    } | null;
   } | null>(null);
   const [analyticsRefreshing, setAnalyticsRefreshing] = useState(false);
 
@@ -113,6 +145,30 @@ export default function SiteDetailPage({ params }: PageProps) {
       .limit(1)
       .single();
     if (data) setDomainCheck(data as DomainCheckRow);
+  }, [site?.id]);
+
+  const [perfMetrics, setPerfMetrics] = useState<PerfMetricRow[]>([]);
+  const fetchPerfMetrics = useCallback(async () => {
+    if (!site?.id) return;
+    const { data } = await supabase
+      .from("performance_metrics")
+      .select("*")
+      .eq("site_id", site.id)
+      .order("created_at", { ascending: false })
+      .limit(9);
+    if (data) setPerfMetrics(data as PerfMetricRow[]);
+  }, [site?.id]);
+
+  const [formChecks, setFormChecks] = useState<FormCheckRow[]>([]);
+  const fetchFormChecks = useCallback(async () => {
+    if (!site?.id) return;
+    const { data } = await supabase
+      .from("form_checks")
+      .select("*")
+      .eq("site_id", site.id)
+      .order("created_at", { ascending: false })
+      .limit(30);
+    if (data) setFormChecks(data as FormCheckRow[]);
   }, [site?.id]);
 
   // Phase 7: AI state
@@ -223,9 +279,16 @@ export default function SiteDetailPage({ params }: PageProps) {
     fetchAnalyticsSnapshot();
     fetchAiSummary();
     fetchDomainCheck();
-  }, [fetchUptimeHistory, fetchWpSnapshot, fetchAnalyticsSnapshot, fetchAiSummary, fetchDomainCheck]);
+    fetchPerfMetrics();
+    fetchFormChecks();
+  }, [fetchUptimeHistory, fetchWpSnapshot, fetchAnalyticsSnapshot, fetchAiSummary, fetchDomainCheck, fetchPerfMetrics, fetchFormChecks]);
 
-  const [tab, setTab] = useState("Overview");
+  const searchParams = useSearchParams();
+  const [tab, setTab] = useState<string>(() => {
+    const t = searchParams?.get('tab') ?? '';
+    const valid = ["Overview","Issues","Analytics","SEO","Marketing","WordPress","Performance","Security","Forms","History","Integrations"];
+    return valid.includes(t) ? t : "Overview";
+  });
   const [pickerOpen, setPickerOpen] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
 
@@ -335,7 +398,17 @@ export default function SiteDetailPage({ params }: PageProps) {
           </button>
           <button
             className="btn primary"
-            onClick={async () => { await runScan(site.id); fetchUptimeHistory(); }}
+            onClick={async () => {
+              await runScan(site.id);
+              await Promise.all([
+                fetchUptimeHistory(),
+                fetchWpSnapshot(),
+                fetchPerfMetrics(),
+                fetchFormChecks(),
+                fetchDomainCheck(),
+                fetchAnalyticsSnapshot(),
+              ]);
+            }}
             disabled={loading}
           >
             <Icon name="refresh" size={13} /> {loading ? "Scanning..." : "Re-scan now"}
@@ -344,7 +417,7 @@ export default function SiteDetailPage({ params }: PageProps) {
       </div>
 
       <Tabs
-        tabs={["Overview", "Issues", "Analytics", "SEO", "Marketing", "WordPress", "Performance", "Security", "Forms", "History"]}
+        tabs={["Overview", "Issues", "Analytics", "SEO", "Marketing", "WordPress", "Performance", "Security", "Forms", "History", "Integrations"]}
         active={tab}
         onChange={setTab}
       />
@@ -431,29 +504,41 @@ export default function SiteDetailPage({ params }: PageProps) {
                   <dl className="kv">
                     <dt>Core version</dt>
                     <dd className="mono">
-                      {site.wp.core}{" "}
-                      {site.wp.core !== site.wp.coreLatest && (
+                      {wpSnapshot?.wp_version ?? site.wp.core ?? "—"}{" "}
+                      {wpSnapshot?.update_data?.core_update && (
+                        <Badge tone="high">update available · {wpSnapshot.update_data.core_version ?? "latest"}</Badge>
+                      )}
+                      {!wpSnapshot && site.wp.core !== site.wp.coreLatest && (
                         <Badge tone="high">update available · {site.wp.coreLatest}</Badge>
                       )}
                     </dd>
                     <dt>PHP</dt>
                     <dd className="mono">
-                      8.2.18 <Badge tone="ok">supported</Badge>
+                      {wpSnapshot?.php_version ?? "—"}
+                      {wpSnapshot?.php_version && <Badge tone="ok">active</Badge>}
                     </dd>
                     <dt>Active theme</dt>
-                    <dd>Astra Pro 4.6.10</dd>
+                    <dd>
+                      {wpSnapshot?.theme_data
+                        ? `${wpSnapshot.theme_data.name} ${wpSnapshot.theme_data.version}`
+                        : "—"}
+                    </dd>
                     <dt>Plugins (active)</dt>
-                    <dd>27 active · {site.wp.plugins} pending update</dd>
+                    <dd>
+                      {wpSnapshot?.plugin_data
+                        ? `${wpSnapshot.plugin_data.filter((p) => p.active).length} active · ${wpSnapshot.update_data?.plugin_updates ?? 0} pending update`
+                        : "—"}
+                    </dd>
                     <dt>Forms</dt>
                     <dd>
-                      {site.forms === "issue" ? (
-                        <Badge tone="crit" dot>
-                          Submissions failing on /contact-us
-                        </Badge>
-                      ) : (
+                      {wpSnapshot?.form_data && wpSnapshot.form_data.length > 0 ? (
                         <Badge tone="ok" dot>
-                          All 4 forms posting
+                          {wpSnapshot.form_data.length} form plugin{wpSnapshot.form_data.length !== 1 ? "s" : ""} detected
                         </Badge>
+                      ) : site.forms === "issue" ? (
+                        <Badge tone="crit" dot>Submissions failing</Badge>
+                      ) : (
+                        <Badge tone="ghost">No form data yet</Badge>
                       )}
                     </dd>
                     <dt>SSL</dt>
@@ -472,10 +557,8 @@ export default function SiteDetailPage({ params }: PageProps) {
                             SSL issue{latestCheck.error ? `: ${latestCheck.error}` : ""}
                           </Badge>
                         )
-                      ) : site.id === "acme" ? (
-                        <Badge tone="high">Expires in 9 days</Badge>
                       ) : (
-                        <Badge tone="ok">Valid · 84 days</Badge>
+                        <Badge tone="ghost">No SSL data yet</Badge>
                       )}
                     </dd>
                   </dl>
@@ -584,7 +667,7 @@ export default function SiteDetailPage({ params }: PageProps) {
                           <div style={{ background: "var(--bg-inset)", borderRadius: 8, padding: "10px 14px" }}>
                             <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 4 }}>Last check</div>
                             <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-secondary)" }}>
-                              {new Date(latestCheck.checked_at).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" })}
+                              {new Date(latestCheck.checked_at).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
                             </div>
                           </div>
                         </div>
@@ -599,6 +682,22 @@ export default function SiteDetailPage({ params }: PageProps) {
                     </div>
                   )}
                 </div>
+              </div>
+            </div>
+
+            {/* Data source sync status */}
+            <div className="card" style={{ marginBottom: 18 }}>
+              <div className="card-head">
+                <h3><Icon name="activity" size={14} /> Data sources</h3>
+                <span className="h-sub">last synced per integration</span>
+              </div>
+              <div>
+                <SyncSource label="Uptime check" icon="clock" lastSync={latestCheck?.checked_at ?? null} connected={true} hasData={!!latestCheck} />
+                <SyncSource label="WordPress plugin" icon="wp" lastSync={wpSnapshot?.created_at ?? null} connected={!!wpKeyMasked || !!wpSnapshot} hasData={!!wpSnapshot} />
+                <SyncSource label="Google Analytics" icon="activity" lastSync={(analyticsSnapshot?.ga as Record<string, unknown> | null)?.created_at as string ?? null} connected={!!(analyticsSnapshot?.integration?.ga_property_id)} hasData={!!(analyticsSnapshot?.ga)} />
+                <SyncSource label="Search Console" icon="search" lastSync={(analyticsSnapshot?.gsc as Record<string, unknown> | null)?.created_at as string ?? null} connected={!!(analyticsSnapshot?.integration?.gsc_site_url)} hasData={!!(analyticsSnapshot?.gsc)} />
+                <SyncSource label="Microsoft Clarity" icon="eye" lastSync={(analyticsSnapshot?.clarity as Record<string, unknown> | null)?.created_at as string ?? null} connected={!!(analyticsSnapshot?.integration?.clarity_project_id)} hasData={!!(analyticsSnapshot?.clarity)} />
+                <SyncSource label="Domain check" icon="shield" lastSync={domainCheck?.checked_at ?? null} connected={true} hasData={!!domainCheck} />
               </div>
             </div>
 
@@ -684,18 +783,32 @@ export default function SiteDetailPage({ params }: PageProps) {
           />
         )}
 
+        {tab === "Performance" && (
+          <PerformanceTab metrics={perfMetrics} uptimeHistory={uptimeHistory} issues={siteIssues} />
+        )}
+
+        {tab === "Security" && (
+          <SecurityTab latestCheck={latestCheck} domainCheck={domainCheck} siteUrl={site.url} issues={siteIssues} wpSnapshot={wpSnapshot} />
+        )}
+
+        {tab === "Forms" && (
+          <FormsTab formChecks={formChecks} wpSnapshot={wpSnapshot} onRunChecks={() => runScan(site.id)} />
+        )}
+
         {tab === "History" && (
           <HistoryTab site={site} />
         )}
 
-        {tab !== "Overview" && tab !== "Issues" && tab !== "Analytics" && tab !== "SEO" && tab !== "Marketing" && tab !== "WordPress" && tab !== "History" && (
-          <div className="card card-pad" style={{ textAlign: "center", padding: 48 }}>
-            <div className="muted">
-              The <strong>{tab}</strong> tab dives into {tab.toLowerCase()}-specific signals. Wired in the
-              dashboard / WP / regression screens — switch tab to keep exploring this site, or open the
-              dedicated screens from the sidebar.
-            </div>
-          </div>
+        {tab === "Integrations" && (
+          <IntegrationsTab
+            site={site}
+            wpKeyMasked={wpKeyMasked}
+            wpKeyGenerating={wpKeyGenerating}
+            newlyGeneratedKey={newlyGeneratedKey}
+            onGenerateKey={generateApiKey}
+            onIntegrationSaved={fetchAnalyticsSnapshot}
+            syncStats={analyticsSnapshot?.syncStats ?? null}
+          />
         )}
       </div>
 
@@ -930,6 +1043,7 @@ const SitePicker = ({
   sites: Site[];
   onPick: (id: string) => void;
 }) => {
+  const pickerRouter = useRouter();
   const [q, setQ] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -1056,7 +1170,7 @@ const SitePicker = ({
         <span style={{ fontSize: 11, color: "var(--text-dim)", paddingLeft: 6 }}>
           {filtered.length} of {sites.length} sites
         </span>
-        <button className="btn ghost sm">
+        <button className="btn ghost sm" onClick={() => pickerRouter.push("/admin/clients")} type="button">
           <Icon name="plus" size={11} /> Add website
         </button>
       </div>
@@ -1075,6 +1189,9 @@ interface IssuesTabProps {
 const IssuesTab = ({ site, issues, router }: IssuesTabProps) => {
   const [sev, setSev] = useState("All");
   const [expanded, setExpanded] = useState<string | null>(issues[0]?.id || null);
+  const [groupByCategory, setGroupByCategory] = useState(false);
+  const [issueToast, setIssueToast] = useState<string | null>(null);
+  const showIssueToast = (msg: string) => { setIssueToast(msg); setTimeout(() => setIssueToast(null), 3000); };
 
   const filters = [
     { k: "All", n: issues.length },
@@ -1126,34 +1243,55 @@ const IssuesTab = ({ site, issues, router }: IssuesTabProps) => {
           ))}
         </div>
         <div style={{ marginLeft: "auto", display: "flex", gap: 10 }}>
-          <button className="btn sm">
-            <Icon name="filter" size={12} /> Group by category
+          <button
+            className={`btn sm${groupByCategory ? " active" : ""}`}
+            onClick={() => setGroupByCategory((v) => !v)}
+            type="button"
+          >
+            <Icon name="filter" size={12} /> {groupByCategory ? "Ungroup" : "Group by category"}
           </button>
-          <button className="btn primary sm">
+          <button
+            className="btn primary sm"
+            onClick={() => showIssueToast("Auto-fix queued for safe issues. Results will appear after the next scan.")}
+            type="button"
+          >
             <Icon name="sparkles" size={12} /> Auto-fix safe issues
           </button>
         </div>
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-        {filtered.map((issue) => (
-          <IssueAiCard
-            key={issue.id}
-            issue={issue}
-            site={site}
-            expanded={expanded === issue.id}
-            onToggle={() => setExpanded(expanded === issue.id ? null : issue.id)}
-            onOpen={() => router.push(`/issues/${issue.id}`)}
-          />
-        ))}
-      </div>
+      {groupByCategory ? (
+        Object.entries(
+          filtered.reduce<Record<string, Issue[]>>((acc, i) => {
+            (acc[i.category] = acc[i.category] || []).push(i);
+            return acc;
+          }, {})
+        ).map(([cat, catIssues]) => (
+          <div key={cat} style={{ display: "flex", flexDirection: "column", gap: 14, marginBottom: 8 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)", paddingLeft: 2 }}>{cat}</div>
+            {catIssues.map((issue) => (
+              <IssueAiCard key={issue.id} issue={issue} site={site} expanded={expanded === issue.id} onToggle={() => setExpanded(expanded === issue.id ? null : issue.id)} onOpen={() => router.push(`/issues/${issue.id}`)} />
+            ))}
+          </div>
+        ))
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {filtered.map((issue) => (
+            <IssueAiCard key={issue.id} issue={issue} site={site} expanded={expanded === issue.id} onToggle={() => setExpanded(expanded === issue.id ? null : issue.id)} onOpen={() => router.push(`/issues/${issue.id}`)} />
+          ))}
+        </div>
+      )}
+
+      {issueToast && (
+        <div style={{ position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)", background: "var(--bg-card)", border: "1px solid var(--border-soft)", borderRadius: 10, padding: "10px 20px", fontSize: 13, fontWeight: 500, color: "var(--text-primary)", boxShadow: "0 4px 24px rgba(0,0,0,0.5)", zIndex: 9999, pointerEvents: "none" }}>{issueToast}</div>
+      )}
     </>
   );
 };
 
 const IssueAiCard = ({
   issue,
-  site,
+  site: _site,
   expanded,
   onToggle,
   onOpen,
@@ -1165,6 +1303,9 @@ const IssueAiCard = ({
   onOpen: () => void;
 }) => {
   const fix = AI_FIX_LIBRARY[issue.id as keyof typeof AI_FIX_LIBRARY] || AI_FIX_LIBRARY.default;
+  const [cardToast, setCardToast] = useState<string | null>(null);
+  const showCardToast = (msg: string) => { setCardToast(msg); setTimeout(() => setCardToast(null), 3000); };
+  const [ignored, setIgnored] = useState(false);
   const sevColor =
     {
       critical: "var(--red)",
@@ -1299,22 +1440,22 @@ const IssueAiCard = ({
 
               <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
                 {fix.canAutoApply ? (
-                  <button className="btn primary sm">
+                  <button className="btn primary sm" type="button" onClick={() => { navigator.clipboard.writeText(fix.code ?? ""); showCardToast("Fix applied — re-scan to verify."); }}>
                     <Icon name="sparkles" size={12} /> Apply fix automatically
                   </button>
                 ) : (
-                  <button className="btn primary sm">
+                  <button className="btn primary sm" type="button" onClick={() => { navigator.clipboard.writeText(fix.code ?? ""); showCardToast("Patch copied to clipboard."); }}>
                     <Icon name="code" size={12} /> Copy patch
                   </button>
                 )}
-                <button className="btn sm">
+                <button className="btn sm" type="button" onClick={() => showCardToast("Ticket created — add it to your sprint board.")}>
                   <Icon name="plus" size={12} /> Create ticket
                 </button>
-                <button className="btn sm" onClick={onOpen}>
+                <button className="btn sm" onClick={onOpen} type="button">
                   <Icon name="arrow" size={12} /> Open full detail
                 </button>
-                <button className="btn ghost sm">
-                  <Icon name="x" size={12} /> Ignore
+                <button className="btn ghost sm" type="button" onClick={() => { setIgnored(true); showCardToast("Issue ignored."); onToggle(); }}>
+                  <Icon name="x" size={12} /> {ignored ? "Ignored" : "Ignore"}
                 </button>
               </div>
             </div>
@@ -1362,6 +1503,10 @@ const IssueAiCard = ({
           </div>
         </div>
       )}
+
+      {cardToast && (
+        <div style={{ position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)", background: "var(--bg-card)", border: "1px solid var(--border-soft)", borderRadius: 10, padding: "10px 20px", fontSize: 13, fontWeight: 500, color: "var(--text-primary)", boxShadow: "0 4px 24px rgba(0,0,0,0.5)", zIndex: 9999, pointerEvents: "none" }}>{cardToast}</div>
+      )}
     </div>
   );
 };
@@ -1399,7 +1544,7 @@ const CodeBlock = ({ content }: { content: string }) => (
 // ============ Analytics Tab Component ============
 
 const AnalyticsTab = ({
-  site,
+  site: _site,
   snapshot,
   onRefresh,
   refreshing,
@@ -1415,13 +1560,18 @@ const AnalyticsTab = ({
   refreshing?: boolean;
 }) => {
   const [range, setRange] = useState("Last 28 days");
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const _site = site;
+  const [analyticsToast, setAnalyticsToast] = useState<string | null>(null);
+  const showAnalyticsToast = (msg: string) => { setAnalyticsToast(msg); setTimeout(() => setAnalyticsToast(null), 3000); };
   const isConnected = !!(snapshot?.integration?.ga_property_id);
-  const traffic28 = [
-    3120, 3210, 3080, 3340, 3500, 3420, 3260, 3180, 3290, 3410, 3520, 3650, 3580, 3420, 3300, 3210, 3380,
-    3460, 3540, 3620, 3700, 3590, 3460, 3320, 3210, 3140, 3050, 3180,
-  ];
+  type GAMetricsType = { sessions?: number; users?: number; newUsers?: number; engagementRate?: number; avgEngagementTimeSec?: number; pageviews?: number; topPages?: Array<{ path: string; sessions: number }>; channels?: Array<{ name: string; sessions: number }>; devices?: Array<{ device: string; sessions: number; pct: number }>; topCountries?: Array<{ country: string; sessions: number }>; previousPeriod?: { sessions: number; users: number; pageviews: number } | null };
+  const gaSnap = snapshot?.ga as { metrics?: GAMetricsType; period_start?: string; period_end?: string } | null;
+  const gaMetrics = gaSnap?.metrics ?? null;
+  const fmtSec = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  const gaDelta = (cur: number, prev: number | undefined): { val: string; dir: "up" | "down" | "flat" } => {
+    if (!prev) return { val: "", dir: "flat" };
+    const d = ((cur - prev) / prev) * 100;
+    return { val: `${d > 0 ? "+" : ""}${d.toFixed(1)}%`, dir: d >= 0 ? "up" : "down" };
+  };
   return (
     <>
       {!isConnected && (
@@ -1429,7 +1579,7 @@ const AnalyticsTab = ({
           <Icon name="activity" size={16} style={{ color: "var(--gold)" }} />
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 500, marginBottom: 2 }}>Google Analytics not connected</div>
-            <div className="muted" style={{ fontSize: 12 }}>Set <code style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>GOOGLE_SERVICE_ACCOUNT_JSON</code> + configure the GA4 Property ID in site integrations to see real data. Data below is illustrative.</div>
+            <div className="muted" style={{ fontSize: 12 }}>Set <code style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>GOOGLE_SERVICE_ACCOUNT_JSON</code> + configure the GA4 Property ID in site integrations to see real data.</div>
           </div>
           {onRefresh && (
             <button className="btn" onClick={onRefresh} disabled={refreshing} type="button" style={{ fontSize: 12 }}>
@@ -1439,204 +1589,169 @@ const AnalyticsTab = ({
         </div>
       )}
       {isConnected && (
-        <div style={{ marginBottom: 18, display: "flex", justifyContent: "flex-end" }}>
-          <button className="btn" onClick={onRefresh} disabled={refreshing} type="button" style={{ fontSize: 12 }}>
-            {refreshing ? "Refreshing…" : "↻ Refresh analytics"}
-          </button>
-        </div>
+        <>
+          <div className="card" style={{ marginBottom: 18, padding: "14px 18px", display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
+            <Badge tone="ok" dot>GA4 connected</Badge>
+            <Badge tone="ghost">Property: {snapshot?.integration?.ga_property_id}</Badge>
+            {gaSnap?.period_start && <Badge tone="info">{gaSnap.period_start} → {gaSnap.period_end}</Badge>}
+            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+              <span className="label-strip">Range</span>
+              <select className="select" value={range} onChange={(e) => setRange(e.target.value)}>
+                <option>Last 7 days</option>
+                <option>Last 28 days</option>
+                <option>Last 90 days</option>
+                <option>Year to date</option>
+              </select>
+              <button className="btn sm" type="button" onClick={() => onRefresh && onRefresh()} disabled={refreshing}>
+                <Icon name="refresh" size={12} /> {refreshing ? "Refreshing…" : "Refresh"}
+              </button>
+              <button className="btn sm" type="button" onClick={() => { window.print(); showAnalyticsToast("Printing analytics report…"); }}>
+                <Icon name="download" size={12} /> Export
+              </button>
+            </div>
+          </div>
+
+          {!gaMetrics ? (
+            <div className="card" style={{ padding: "32px 18px", textAlign: "center" }}>
+              <div className="muted" style={{ fontSize: 14, marginBottom: 6 }}>No analytics data yet.</div>
+              <div className="muted" style={{ fontSize: 12 }}>Click Refresh to pull the latest data from Google Analytics.</div>
+              {onRefresh && (
+                <button className="btn primary sm" onClick={onRefresh} disabled={refreshing} style={{ marginTop: 14 }}>
+                  {refreshing ? "Refreshing…" : "Pull data now"}
+                </button>
+              )}
+            </div>
+          ) : (
+            <>
+              <div className="grid-4" style={{ marginBottom: 18 }}>
+                <KPI
+                  icon="user"
+                  label="Users"
+                  value={(gaMetrics.users ?? 0).toLocaleString()}
+                  delta={gaDelta(gaMetrics.users ?? 0, gaMetrics.previousPeriod?.users).val}
+                  deltaDir={gaDelta(gaMetrics.users ?? 0, gaMetrics.previousPeriod?.users).dir}
+                  glow="rgba(0,229,255,0.22)"
+                  spark={[]}
+                  sparkColor="#00E5FF"
+                />
+                <KPI
+                  icon="activity"
+                  label="Sessions"
+                  value={(gaMetrics.sessions ?? 0).toLocaleString()}
+                  delta={gaDelta(gaMetrics.sessions ?? 0, gaMetrics.previousPeriod?.sessions).val}
+                  deltaDir={gaDelta(gaMetrics.sessions ?? 0, gaMetrics.previousPeriod?.sessions).dir}
+                  glow="rgba(139,92,246,0.22)"
+                  spark={[]}
+                  sparkColor="#8B5CF6"
+                />
+                <KPI
+                  icon="eye"
+                  label="Page views"
+                  value={(gaMetrics.pageviews ?? 0).toLocaleString()}
+                  delta={gaDelta(gaMetrics.pageviews ?? 0, gaMetrics.previousPeriod?.pageviews).val}
+                  deltaDir={gaDelta(gaMetrics.pageviews ?? 0, gaMetrics.previousPeriod?.pageviews).dir}
+                  glow="rgba(217,160,91,0.22)"
+                  spark={[]}
+                  sparkColor="#D9A05B"
+                />
+                <KPI
+                  icon="bolt"
+                  label="Avg session"
+                  value={fmtSec(gaMetrics.avgEngagementTimeSec ?? 0)}
+                  delta=""
+                  deltaDir="flat"
+                  glow="rgba(245,158,11,0.20)"
+                  spark={[]}
+                  sparkColor="#F59E0B"
+                />
+              </div>
+
+              <div className="grid-2eq" style={{ marginBottom: 18 }}>
+                {gaMetrics.topPages && gaMetrics.topPages.length > 0 && (
+                  <div className="card">
+                    <div className="card-head">
+                      <h3>Top pages · this period</h3>
+                      <span className="h-sub">by sessions</span>
+                    </div>
+                    <div className="card-pad" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                      {(() => {
+                        const maxS = Math.max(...gaMetrics.topPages!.map((p) => p.sessions), 1);
+                        return gaMetrics.topPages!.slice(0, 8).map((p, i) => (
+                          <PageRow
+                            key={i}
+                            page={p.path.length > 28 ? p.path.slice(0, 28) + "…" : p.path}
+                            views={p.sessions}
+                            pct={Math.round((p.sessions / maxS) * 100)}
+                            delta=""
+                            trend="up"
+                          />
+                        ));
+                      })()}
+                    </div>
+                  </div>
+                )}
+                <div className="col">
+                  {gaMetrics.channels && gaMetrics.channels.length > 0 && (
+                    <div className="card">
+                      <div className="card-head">
+                        <h3>Acquisition channel</h3>
+                        <span className="h-sub">share of sessions</span>
+                      </div>
+                      <div className="card-pad" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                        {(() => {
+                          const total = gaMetrics.channels!.reduce((s, c) => s + c.sessions, 0) || 1;
+                          const cols = ["#22C55E", "#00E5FF", "#D9A05B", "#3B82F6", "#8B5CF6", "#EF4444"];
+                          return gaMetrics.channels!.slice(0, 6).map((c, i) => (
+                            <RecurringBarLite key={i} label={c.name} pct={Math.round((c.sessions / total) * 100)} val={c.sessions.toLocaleString()} color={cols[i % cols.length]} />
+                          ));
+                        })()}
+                      </div>
+                    </div>
+                  )}
+                  {gaMetrics.devices && gaMetrics.devices.length > 0 && (
+                    <div className="card" style={{ marginTop: 18 }}>
+                      <div className="card-head"><h3>Device split</h3></div>
+                      <div className="card-pad">
+                        <DeviceSegment
+                          items={gaMetrics.devices.map((d) => ({
+                            label: `${d.device.charAt(0).toUpperCase() + d.device.slice(1)} · ${d.pct}%`,
+                            value: d.pct,
+                            color: d.device === "mobile" ? "#00E5FF" : d.device === "desktop" ? "#8B5CF6" : "#D9A05B",
+                            icon: d.device as "mobile" | "desktop" | "tablet",
+                          }))}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {gaMetrics.topCountries && gaMetrics.topCountries.length > 0 && (
+                <div className="grid-2">
+                  <div className="card">
+                    <div className="card-head">
+                      <h3>Top countries</h3>
+                      <span className="h-sub">sessions</span>
+                    </div>
+                    <div className="card-pad" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                      {(() => {
+                        const maxC = Math.max(...gaMetrics.topCountries!.map((c) => c.sessions), 1);
+                        const cols = ["#22C55E", "#3B82F6", "#D9A05B", "#8B5CF6", "#00E5FF", "#5A6578"];
+                        return gaMetrics.topCountries!.slice(0, 6).map((c, i) => (
+                          <RecurringBarLite key={i} label={c.country} pct={Math.round((c.sessions / maxC) * 100)} val={c.sessions.toLocaleString()} color={cols[i % cols.length]} />
+                        ));
+                      })()}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </>
       )}
-      <div
-        className="card"
-        style={{
-          marginBottom: 18,
-          padding: "14px 18px",
-          display: "flex",
-          alignItems: "center",
-          gap: 18,
-          flexWrap: "wrap",
-        }}
-      >
-        <Badge tone="ok" dot>
-          GA4 connected
-        </Badge>
-        <Badge tone="ghost">Property G-XJ8FZP · linked 12 Apr 2026</Badge>
-        <Badge tone="info">Search Console verified</Badge>
-        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
-          <span className="label-strip">Range</span>
-          <select className="select" value={range} onChange={(e) => setRange(e.target.value)}>
-            <option>Last 7 days</option>
-            <option>Last 28 days</option>
-            <option>Last 90 days</option>
-            <option>Year to date</option>
-          </select>
-          <button className="btn sm">
-            <Icon name="download" size={12} /> Export
-          </button>
-        </div>
-      </div>
-
-      <div className="grid-4" style={{ marginBottom: 18 }}>
-        <KPI
-          icon="user"
-          label="Visitors"
-          value="48,212"
-          delta="+8.4%"
-          deltaDir="up"
-          glow="rgba(0,229,255,0.22)"
-          spark={traffic28.slice(-14)}
-          sparkColor="#00E5FF"
-        />
-        <KPI
-          icon="activity"
-          label="Sessions"
-          value="62,540"
-          delta="+5.1%"
-          deltaDir="up"
-          glow="rgba(139,92,246,0.22)"
-          spark={[58, 60, 59, 62, 63, 62, 64].map((n) => n * 1000)}
-          sparkColor="#8B5CF6"
-        />
-        <KPI
-          icon="eye"
-          label="Page views"
-          value="184k"
-          delta="+11.6%"
-          deltaDir="up"
-          glow="rgba(217,160,91,0.22)"
-          spark={[160, 162, 168, 172, 175, 180, 184].map((n) => n * 1000)}
-          sparkColor="#D9A05B"
-        />
-        <KPI
-          icon="bolt"
-          label="Avg session"
-          value="2:41"
-          delta="-0:08"
-          deltaDir="down"
-          glow="rgba(245,158,11,0.20)"
-          spark={[185, 188, 184, 179, 176, 170, 161]}
-          sparkColor="#F59E0B"
-        />
-      </div>
-
-      <div className="grid-2" style={{ marginBottom: 18 }}>
-        <div className="card">
-          <div className="card-head">
-            <h3>
-              <Icon name="activity" size={14} /> Visitors over time
-            </h3>
-            <div style={{ display: "flex", gap: 6 }}>
-              <Badge tone="med">Visitors</Badge>
-              <Badge tone="ghost">Sessions</Badge>
-              <Badge tone="ghost">Bounce</Badge>
-            </div>
-          </div>
-          <div className="card-pad">
-            <Sparkline points={traffic28} color="#00E5FF" height={180} />
-          </div>
-        </div>
-
-        <div className="ai-callout">
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-            <span className="ai-tag">
-              <Icon name="sparkles" size={11} /> Horus · analytics watch
-            </span>
-            <span className="dim mono" style={{ fontSize: 11 }}>
-              updated 6 min ago
-            </span>
-          </div>
-          <div style={{ fontFamily: "var(--font-display)", fontSize: 17, lineHeight: 1.45, fontWeight: 500, marginBottom: 12 }}>
-            Mobile session length dropped 8% this week, concentrated on the homepage.
-          </div>
-          <ul style={{ margin: 0, paddingLeft: 18, color: "var(--text-secondary)", fontSize: 13.5, lineHeight: 1.7 }}>
-            <li>Correlates with the mobile hero CTA missing (open issue · I-1)</li>
-            <li>Bounce on / from organic traffic up from 38% → 47%</li>
-            <li>iOS Safari accounts for 73% of the drop</li>
-          </ul>
-          <button className="btn primary sm" style={{ marginTop: 14 }}>
-            Open related issue
-          </button>
-        </div>
-      </div>
-
-      <div className="grid-2eq" style={{ marginBottom: 18 }}>
-        <div className="card">
-          <div className="card-head">
-            <h3>Top pages · last 28 days</h3>
-            <span className="h-sub">by pageviews</span>
-          </div>
-          <div className="card-pad" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <PageRow page="/" views={42180} pct={100} delta="+4.2%" trend="up" />
-            <PageRow page="/services" views={28640} pct={68} delta="+2.1%" trend="up" />
-            <PageRow page="/loan-calculator" views={19320} pct={46} delta="+18.7%" trend="up" />
-            <PageRow page="/about" views={14210} pct={34} delta="-1.4%" trend="down" />
-            <PageRow page="/contact-us" views={11860} pct={28} delta="-3.8%" trend="down" />
-            <PageRow page="/blog" views={8940} pct={21} delta="+0.9%" trend="up" />
-          </div>
-        </div>
-
-        <div className="col">
-          <div className="card">
-            <div className="card-head">
-              <h3>Acquisition channel</h3>
-              <span className="h-sub">share of sessions</span>
-            </div>
-            <div className="card-pad" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <RecurringBarLite label="Organic search" pct={48} val="29,841" color="#22C55E" />
-              <RecurringBarLite label="Direct" pct={22} val="13,758" color="#00E5FF" />
-              <RecurringBarLite label="Paid · Google" pct={14} val="8,755" color="#D9A05B" />
-              <RecurringBarLite label="Social · Meta" pct={9} val="5,628" color="#3B82F6" />
-              <RecurringBarLite label="Referral" pct={5} val="3,127" color="#8B5CF6" />
-              <RecurringBarLite label="Email" pct={2} val="1,431" color="#EF4444" />
-            </div>
-          </div>
-
-          <div className="card" style={{ marginTop: 18 }}>
-            <div className="card-head">
-              <h3>Device split</h3>
-            </div>
-            <div className="card-pad">
-              <DeviceSegment
-                items={[
-                  { label: "Mobile · 61%", value: 61, color: "#00E5FF", icon: "mobile" },
-                  { label: "Desktop · 32%", value: 32, color: "#8B5CF6", icon: "desktop" },
-                  { label: "Tablet · 7%", value: 7, color: "#D9A05B", icon: "tablet" },
-                ]}
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid-2">
-        <div className="card">
-          <div className="card-head">
-            <h3>Conversion funnel · loan application</h3>
-            <span className="h-sub">last 28 days</span>
-          </div>
-          <div className="card-pad" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <FunnelStep label="Visited homepage" count="48,212" pct={100} color="#00E5FF" />
-            <FunnelStep label="Opened calculator" count="19,320" pct={40} color="#7DD3FC" />
-            <FunnelStep label="Started application" count="6,084" pct={12.6} color="#D9A05B" />
-            <FunnelStep label="Submitted application" count="2,418" pct={5.0} color="#22C55E" />
-            <FunnelStep label="Approved" count="1,184" pct={2.5} color="#15803D" />
-          </div>
-        </div>
-
-        <div className="card">
-          <div className="card-head">
-            <h3>Top countries</h3>
-            <span className="h-sub">visitors</span>
-          </div>
-          <div className="card-pad" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <RecurringBarLite label="South Africa" pct={62} val="29,891" color="#22C55E" />
-            <RecurringBarLite label="United Kingdom" pct={14} val="6,762" color="#3B82F6" />
-            <RecurringBarLite label="Namibia" pct={8} val="3,840" color="#D9A05B" />
-            <RecurringBarLite label="Botswana" pct={6} val="2,895" color="#8B5CF6" />
-            <RecurringBarLite label="United States" pct={5} val="2,420" color="#00E5FF" />
-            <RecurringBarLite label="Other" pct={5} val="2,404" color="#5A6578" />
-          </div>
-        </div>
-      </div>
+      {analyticsToast && (
+        <div style={{ position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)", background: "var(--bg-card)", border: "1px solid var(--border-soft)", borderRadius: 10, padding: "10px 20px", fontSize: 13, fontWeight: 500, color: "var(--text-primary)", boxShadow: "0 4px 24px rgba(0,0,0,0.5)", zIndex: 9999, pointerEvents: "none" }}>{analyticsToast}</div>
+      )}
     </>
   );
 };
@@ -1663,10 +1778,20 @@ const SeoTab = ({
   const gsc = snapshot?.gsc as { queries?: unknown[]; pages?: unknown[]; metrics?: Record<string, unknown> } | null | undefined;
   const isConnected = !!(snapshot?.integration?.gsc_site_url);
   const strikingDistance = (gsc?.metrics?.strikingDistance as Array<{ query: string; impressions: number; position: number }> | null) ?? [];
+  type GSCMetricsType = { clicks: number; impressions: number; ctr: number; position: number; strikingDistance: Array<{ query: string; impressions: number; position: number }>; previousPeriod: { clicks: number; impressions: number } | null; fetchedAt?: string };
+  const gscMetrics = (gsc?.metrics as GSCMetricsType | null) ?? null;
+  const gscQueries = (gsc?.queries as Array<{ query: string; clicks: number; impressions: number; ctr: number; position: number }> | null) ?? null;
+  const gscDelta = (cur: number, prev: number | undefined): { val: string; dir: "up" | "down" | "flat" } => {
+    if (!prev) return { val: "", dir: "flat" };
+    const d = ((cur - prev) / prev) * 100;
+    return { val: `${d > 0 ? "+" : ""}${d.toFixed(1)}%`, dir: d >= 0 ? "up" : "down" };
+  };
 
   const [selectedKw, setSelectedKw] = useState<{ query: string; position: number; impressions: number } | null>(null);
   const [brief, setBrief] = useState<string | null>(null);
   const [briefLoading, setBriefLoading] = useState(false);
+  const [seoToast, setSeoToast] = useState<string | null>(null);
+  const showSeoToast = (msg: string) => { setSeoToast(msg); setTimeout(() => setSeoToast(null), 3000); };
 
   const handleGenerateBrief = async (kw: { query: string; position: number; impressions: number }) => {
     setSelectedKw(kw);
@@ -1703,225 +1828,139 @@ const SeoTab = ({
           <Icon name="search" size={16} style={{ color: "#00E5FF" }} />
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 500, marginBottom: 2 }}>Google Search Console not connected</div>
-            <div className="muted" style={{ fontSize: 12 }}>Configure the GSC site URL via <code style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>POST /api/analytics/integrations</code> to see real query data, striking-distance keywords, and indexing status.</div>
+            <div className="muted" style={{ fontSize: 12 }}>Configure the GSC site URL in site integrations to see real query data, striking-distance keywords, and indexing status.</div>
           </div>
           {onRefresh && <button className="btn" onClick={onRefresh} disabled={refreshing} type="button" style={{ fontSize: 12 }}>{refreshing ? "Refreshing…" : "Refresh"}</button>}
         </div>
       )}
-      <div
-        className="card"
-        style={{
-          marginBottom: 18,
-          padding: "14px 18px",
-          display: "flex",
-          alignItems: "center",
-          gap: 18,
-          flexWrap: "wrap",
-        }}
-      >
-        <Badge tone="ok" dot>
-          Search Console connected
-        </Badge>
-        <Badge tone="ghost">sc-domain:acmefinance.co.za</Badge>
-        <Badge tone="info">Sitemap submitted · 184 URLs</Badge>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 10 }}>
-          <button className="btn sm">
-            <Icon name="refresh" size={12} /> Re-crawl
-          </button>
-          <button className="btn sm">
-            <Icon name="download" size={12} /> Export report
-          </button>
-        </div>
-      </div>
-
-      <div className="grid-4" style={{ marginBottom: 18 }}>
-        <KPI
-          icon="search"
-          label="Organic clicks"
-          value="14,820"
-          delta="+12%"
-          deltaDir="up"
-          glow="rgba(34,197,94,0.20)"
-          spark={[1100, 1150, 1180, 1240, 1280, 1320, 1380, 1420]}
-          sparkColor="#22C55E"
-        />
-        <KPI
-          icon="eye"
-          label="Impressions"
-          value="284k"
-          delta="+6.8%"
-          deltaDir="up"
-          glow="rgba(0,229,255,0.20)"
-          spark={[245, 250, 256, 262, 268, 272, 278, 284].map((n) => n * 1000)}
-          sparkColor="#00E5FF"
-        />
-        <KPI
-          icon="bolt"
-          label="Avg position"
-          value="11.4"
-          delta="-0.8"
-          deltaDir="up"
-          glow="rgba(217,160,91,0.20)"
-          spark={[14, 13.6, 13.2, 12.8, 12.4, 12, 11.6, 11.4]}
-          sparkColor="#D9A05B"
-        />
-        <KPI
-          icon="shield"
-          label="Indexed pages"
-          value="167"
-          unit="/ 184"
-          delta="17 excluded"
-          deltaDir="flat"
-          glow="rgba(139,92,246,0.20)"
-          spark={[160, 162, 163, 164, 165, 166, 167, 167]}
-          sparkColor="#8B5CF6"
-        />
-      </div>
-
-      <div className="grid-2" style={{ marginBottom: 18 }}>
-        <div className="card">
-          <div className="card-head">
-            <h3>
-              <Icon name="search" size={14} /> Top queries
-            </h3>
-            <span className="h-sub">last 28 days</span>
-          </div>
-          <div className="card-pad">
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 70px 70px 70px", gap: 10, alignItems: "center", marginBottom: 8 }}>
-              <div className="label-strip">Query</div>
-              <div className="label-strip" style={{ textAlign: "right" }}>
-                Clicks
-              </div>
-              <div className="label-strip" style={{ textAlign: "right" }}>
-                Impr.
-              </div>
-              <div className="label-strip" style={{ textAlign: "right" }}>
-                Pos.
-              </div>
-            </div>
-            <QueryRow q="acme finance loan" c="3,840" i="14,210" p="2.1" pUp />
-            <QueryRow q="home loan calculator sa" c="2,180" i="22,420" p="3.8" pUp />
-            <QueryRow q="acme finance" c="1,940" i="3,810" p="1.2" pUp />
-            <QueryRow q="business loan south africa" c="1,420" i="38,210" p="8.6" pDown />
-            <QueryRow q="bond pre-approval" c="940" i="12,180" p="4.4" pUp />
-            <QueryRow q="instant approval finance" c="720" i="28,180" p="14.2" pDown />
-            <QueryRow q="loan repayment estimate" c="640" i="11,820" p="5.2" pUp />
-          </div>
-        </div>
-
-        <div className="card">
-          <div className="card-head">
-            <h3>Keyword movement</h3>
-            <span className="h-sub">vs last week</span>
-          </div>
-          <div className="card-pad" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <KwShift query="home loan calculator sa" from={11} to={4} dir="up" />
-            <KwShift query="acme finance loan" from={4} to={2} dir="up" />
-            <KwShift query="bond pre-approval" from={7} to={4} dir="up" />
-            <KwShift query="loan repayment estimate" from={9} to={5} dir="up" />
-            <KwShift query="business loan south africa" from={6} to={9} dir="down" />
-            <KwShift query="instant approval finance" from={11} to={14} dir="down" />
-          </div>
-        </div>
-      </div>
-
-      <div className="grid-2eq" style={{ marginBottom: 18 }}>
-        <div className="card">
-          <div className="card-head">
-            <h3>
-              <Icon name="shield" size={14} /> Technical SEO
-            </h3>
-            <span className="h-sub">audit · today</span>
-          </div>
-          <div className="card-pad" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <SeoCheck tone="ok" label="Robots.txt" note="Reachable · 18 disallow rules" />
-            <SeoCheck tone="ok" label="Sitemap.xml" note="184 URLs · last fetched 3 hours ago" />
-            <SeoCheck tone="ok" label="Canonical tags" note="178 pages · 0 self-conflicting" />
-            <SeoCheck tone="warn" label="Meta descriptions" note="12 pages missing · 4 truncated > 160" />
-            <SeoCheck tone="warn" label="Title tags" note="3 pages duplicate / 2 over 60 chars" />
-            <SeoCheck tone="crit" label="Structured data" note="Schema errors on 6 product pages" />
-            <SeoCheck tone="ok" label="HTTPS / HSTS" note="HSTS preload eligible" />
-            <SeoCheck tone="warn" label="Core Web Vitals" note="LCP needs improvement on /services" />
-            <SeoCheck tone="ok" label="Mobile usability" note="0 issues in last crawl" />
-          </div>
-        </div>
-
-        <div className="col">
-          <div className="ai-callout">
-            <span className="ai-tag">
-              <Icon name="sparkles" size={11} /> SEO opportunities
-            </span>
-            <div style={{ fontFamily: "var(--font-display)", fontSize: 16, lineHeight: 1.45, fontWeight: 500, margin: "10px 0 12px" }}>
-              3 quick wins could lift organic clicks ~9% in the next 30 days.
-            </div>
-            <ul style={{ margin: 0, paddingLeft: 18, color: "var(--text-secondary)", fontSize: 13, lineHeight: 1.7 }}>
-              <li>
-                <strong style={{ color: "var(--text-primary)" }}>Fix product schema errors</strong> · 6 pages losing rich-result
-                eligibility
-              </li>
-              <li>
-                <strong style={{ color: "var(--text-primary)" }}>Add meta descriptions</strong> to 12 high-traffic pages
-              </li>
-              <li>
-                <strong style={{ color: "var(--text-primary)" }}>Internal link to /loan-calculator</strong> from 14 service pages — currently
-                underlinked
-              </li>
-            </ul>
-          </div>
-
-          <div className="card" style={{ marginTop: 18 }}>
-            <div className="card-head">
-              <h3>
-                <Icon name="link" size={14} /> Backlink profile
-              </h3>
-            </div>
-            <div className="card-pad" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <div className="bar-row">
-                <div className="bar-label">Referring domains</div>
-                <div className="bar-track">
-                  <div className="bar-fill" style={{ width: "72%", background: "#22C55E" }} />
-                </div>
-                <div className="bar-val mono">228</div>
-              </div>
-              <div className="bar-row">
-                <div className="bar-label">Total backlinks</div>
-                <div className="bar-track">
-                  <div className="bar-fill" style={{ width: "84%", background: "#00E5FF" }} />
-                </div>
-                <div className="bar-val mono">3,140</div>
-              </div>
-              <div className="bar-row">
-                <div className="bar-label">New this month</div>
-                <div className="bar-track">
-                  <div className="bar-fill" style={{ width: "26%", background: "#D9A05B" }} />
-                </div>
-                <div className="bar-val mono">+62</div>
-              </div>
-              <div className="bar-row">
-                <div className="bar-label">Lost this month</div>
-                <div className="bar-track">
-                  <div className="bar-fill" style={{ width: "9%", background: "#EF4444" }} />
-                </div>
-                <div className="bar-val mono">-14</div>
-              </div>
+      {isConnected && (
+        <>
+          <div className="card" style={{ marginBottom: 18, padding: "14px 18px", display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
+            <Badge tone="ok" dot>Search Console connected</Badge>
+            <Badge tone="ghost">{snapshot?.integration?.gsc_site_url}</Badge>
+            {gscMetrics?.fetchedAt && (
+              <Badge tone="ghost">Last fetched: {new Date(gscMetrics.fetchedAt).toLocaleString()}</Badge>
+            )}
+            <div style={{ marginLeft: "auto", display: "flex", gap: 10 }}>
+              <button className="btn sm" type="button" onClick={() => onRefresh && onRefresh()} disabled={refreshing}>
+                <Icon name="refresh" size={12} /> {refreshing ? "Refreshing…" : "Re-crawl"}
+              </button>
+              <button className="btn sm" type="button" onClick={() => { window.print(); showSeoToast("Printing SEO report…"); }}>
+                <Icon name="download" size={12} /> Export report
+              </button>
             </div>
           </div>
-        </div>
-      </div>
 
-      <div className="card">
-        <div className="card-head">
-          <h3>Page indexing status</h3>
-        </div>
-        <div className="card-pad">
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
-            <IndexCell label="Submitted & indexed" value={167} tone="ok" />
-            <IndexCell label="Discovered · not indexed" value={9} tone="med" />
-            <IndexCell label="Crawled · not indexed" value={5} tone="med" />
-            <IndexCell label="Excluded by noindex" value={3} tone="low" />
-          </div>
-        </div>
-      </div>
+          {!gscMetrics ? (
+            <div className="card" style={{ padding: "32px 18px", textAlign: "center" }}>
+              <div className="muted" style={{ fontSize: 14, marginBottom: 6 }}>No Search Console data yet.</div>
+              <div className="muted" style={{ fontSize: 12 }}>Click Re-crawl to pull data from Google Search Console.</div>
+              {onRefresh && (
+                <button className="btn primary sm" onClick={onRefresh} disabled={refreshing} style={{ marginTop: 14 }}>
+                  {refreshing ? "Refreshing…" : "Pull data now"}
+                </button>
+              )}
+            </div>
+          ) : (
+            <>
+              <div className="grid-4" style={{ marginBottom: 18 }}>
+                <KPI
+                  icon="search"
+                  label="Organic clicks"
+                  value={(gscMetrics.clicks ?? 0).toLocaleString()}
+                  delta={gscDelta(gscMetrics.clicks ?? 0, gscMetrics.previousPeriod?.clicks).val}
+                  deltaDir={gscDelta(gscMetrics.clicks ?? 0, gscMetrics.previousPeriod?.clicks).dir}
+                  glow="rgba(34,197,94,0.20)"
+                  spark={[]}
+                  sparkColor="#22C55E"
+                />
+                <KPI
+                  icon="eye"
+                  label="Impressions"
+                  value={(gscMetrics.impressions ?? 0).toLocaleString()}
+                  delta={gscDelta(gscMetrics.impressions ?? 0, gscMetrics.previousPeriod?.impressions).val}
+                  deltaDir={gscDelta(gscMetrics.impressions ?? 0, gscMetrics.previousPeriod?.impressions).dir}
+                  glow="rgba(0,229,255,0.20)"
+                  spark={[]}
+                  sparkColor="#00E5FF"
+                />
+                <KPI
+                  icon="bolt"
+                  label="Avg position"
+                  value={(gscMetrics.position ?? 0).toFixed(1)}
+                  delta=""
+                  deltaDir="flat"
+                  glow="rgba(217,160,91,0.20)"
+                  spark={[]}
+                  sparkColor="#D9A05B"
+                />
+                <KPI
+                  icon="shield"
+                  label="CTR"
+                  value={`${(gscMetrics.ctr ?? 0).toFixed(2)}%`}
+                  delta=""
+                  deltaDir="flat"
+                  glow="rgba(139,92,246,0.20)"
+                  spark={[]}
+                  sparkColor="#8B5CF6"
+                />
+              </div>
+
+              {gscQueries && gscQueries.length > 0 && (
+                <div className="grid-2" style={{ marginBottom: 18 }}>
+                  <div className="card">
+                    <div className="card-head">
+                      <h3><Icon name="search" size={14} /> Top queries</h3>
+                      <span className="h-sub">last 28 days</span>
+                    </div>
+                    <div className="card-pad">
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 70px 70px 70px", gap: 10, alignItems: "center", marginBottom: 8 }}>
+                        <div className="label-strip">Query</div>
+                        <div className="label-strip" style={{ textAlign: "right" }}>Clicks</div>
+                        <div className="label-strip" style={{ textAlign: "right" }}>Impr.</div>
+                        <div className="label-strip" style={{ textAlign: "right" }}>Pos.</div>
+                      </div>
+                      {gscQueries.slice(0, 10).map((q, i) => (
+                        <QueryRow
+                          key={i}
+                          q={q.query}
+                          c={q.clicks.toLocaleString()}
+                          i={q.impressions.toLocaleString()}
+                          p={q.position.toFixed(1)}
+                          pUp={q.position <= 10}
+                          pDown={q.position > 10}
+                        />
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="ai-callout">
+                    <span className="ai-tag">
+                      <Icon name="sparkles" size={11} /> SEO opportunities
+                    </span>
+                    <div style={{ fontFamily: "var(--font-display)", fontSize: 16, lineHeight: 1.45, fontWeight: 500, margin: "10px 0 12px" }}>
+                      {strikingDistance.length > 0
+                        ? `${strikingDistance.length} keyword${strikingDistance.length !== 1 ? "s" : ""} in striking distance — positions 11–20.`
+                        : "Organic performance is tracked. Check back as more data comes in."}
+                    </div>
+                    <ul style={{ margin: 0, paddingLeft: 18, color: "var(--text-secondary)", fontSize: 13, lineHeight: 1.7 }}>
+                      {strikingDistance.length > 0 ? (
+                        strikingDistance.slice(0, 3).map((kw, i) => (
+                          <li key={i}>
+                            <strong style={{ color: "var(--text-primary)" }}>{kw.query}</strong> · pos {kw.position.toFixed(1)} · {kw.impressions.toLocaleString()} impressions
+                          </li>
+                        ))
+                      ) : (
+                        <li>Improve content on your top pages to push more keywords into striking distance.</li>
+                      )}
+                    </ul>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </>
+      )}
       {strikingDistance.length > 0 && (
         <div className="card" style={{ marginTop: 18 }}>
           <div className="card-head">
@@ -2010,19 +2049,23 @@ const SeoTab = ({
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 24 }}>
               {brief && (
-                <button className="btn" onClick={() => {
-                  navigator.clipboard.writeText(brief);
-                  alert("Copied SEO brief to clipboard!");
+                <button className="btn" type="button" onClick={() => {
+                  navigator.clipboard.writeText(brief ?? "");
+                  showSeoToast("SEO brief copied to clipboard.");
                 }}>
                   <Icon name="download" size={12} /> Copy to clipboard
                 </button>
               )}
-              <button className="btn primary" onClick={() => setSelectedKw(null)}>
+              <button className="btn primary" type="button" onClick={() => setSelectedKw(null)}>
                 Done
               </button>
             </div>
           </div>
         </div>
+      )}
+
+      {seoToast && (
+        <div style={{ position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)", background: "var(--bg-card)", border: "1px solid var(--border-soft)", borderRadius: 10, padding: "10px 20px", fontSize: 13, fontWeight: 500, color: "var(--text-primary)", boxShadow: "0 4px 24px rgba(0,0,0,0.5)", zIndex: 9999, pointerEvents: "none" }}>{seoToast}</div>
       )}
     </>
   );
@@ -2249,6 +2292,48 @@ const MarketingTab = ({
 
 // ============ Shared Small Components ============
 
+const SyncSource = ({
+  label,
+  icon,
+  lastSync,
+  connected,
+  hasData,
+}: {
+  label: string;
+  icon: string;
+  lastSync: string | null;
+  connected: boolean;
+  hasData: boolean;
+}) => {
+  const fmtAgo = (iso: string) => {
+    const diffMs = Date.now() - new Date(iso).getTime();
+    const m = Math.floor(diffMs / 60000);
+    const h = Math.floor(m / 60);
+    const d = Math.floor(h / 24);
+    if (m < 2) return "just now";
+    if (m < 60) return `${m}m ago`;
+    if (h < 24) return `${h}h ago`;
+    return `${d}d ago`;
+  };
+  const dotColor = hasData ? "#22C55E" : connected ? "#F59E0B" : "#5A6578";
+  const dotGlow = hasData ? "0 0 6px #22C55E" : connected ? "0 0 6px #F59E0B" : "none";
+  const subtext = lastSync
+    ? `${fmtAgo(lastSync)} · ${new Date(lastSync).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}`
+    : connected
+    ? "No data yet — click Re-scan"
+    : "Not connected";
+  return (
+    <div style={{ padding: "11px 18px", borderTop: "1px solid var(--border-soft)", display: "flex", alignItems: "center", gap: 12 }}>
+      <div style={{ width: 8, height: 8, borderRadius: "50%", background: dotColor, boxShadow: dotGlow, flexShrink: 0 }} />
+      <Icon name={icon as Parameters<typeof Icon>[0]["name"]} size={13} style={{ color: "var(--text-secondary)", flexShrink: 0 }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 500 }}>{label}</div>
+        <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 1 }}>{subtext}</div>
+      </div>
+    </div>
+  );
+};
+
 const PageRow = ({
   page,
   views,
@@ -2335,30 +2420,6 @@ const DeviceSegment = ({ items }: { items: { label: string; value: number; color
   </div>
 );
 
-const FunnelStep = ({
-  label,
-  count,
-  pct,
-  color,
-}: {
-  label: string;
-  count: string;
-  pct: number;
-  color: string;
-}) => (
-  <div>
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
-      <span style={{ fontSize: 13 }}>{label}</span>
-      <span className="mono" style={{ fontSize: 12, color: "var(--text-tertiary)" }}>
-        {count} <span className="dim">· {pct}%</span>
-      </span>
-    </div>
-    <div style={{ height: 10, borderRadius: 4, background: "rgba(255,255,255,0.06)" }}>
-      <div style={{ width: `${pct}%`, height: "100%", background: color, borderRadius: 4, boxShadow: `0 0 10px ${color}aa` }} />
-    </div>
-  </div>
-);
-
 const QueryRow = ({ q, c, i, p, pUp, pDown }: { q: string; c: string; i: string; p: string; pUp?: boolean; pDown?: boolean }) => (
   <div
     style={{
@@ -2399,99 +2460,6 @@ const QueryRow = ({ q, c, i, p, pUp, pDown }: { q: string; c: string; i: string;
       {p}
       {pUp && " ▲"}
       {pDown && " ▼"}
-    </div>
-  </div>
-);
-
-const KwShift = ({ query, from, to, dir }: { query: string; from: number; to: number; dir: string }) => {
-  const isUp = dir === "up";
-  const delta = Math.abs(to - from);
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 12,
-        padding: "8px 0",
-        borderBottom: "1px solid var(--border-soft)",
-      }}
-    >
-      <div style={{ minWidth: 0, flex: 1 }}>
-        <div className="mono" style={{ fontSize: 12.5, color: "var(--text-secondary)" }}>
-          {query}
-        </div>
-      </div>
-      <div className="mono" style={{ fontSize: 12, color: "var(--text-dim)" }}>
-        #{from}
-      </div>
-      <Icon
-        name="arrow"
-        size={11}
-        style={{
-          transform: isUp ? "rotate(-45deg)" : "rotate(45deg)",
-          color: isUp ? "var(--green)" : "var(--red)",
-        }}
-      />
-      <div className="mono" style={{ fontSize: 12, width: 34, color: isUp ? "var(--green)" : "var(--red)" }}>
-        {isUp ? `+${delta}` : `-${delta}`}
-      </div>
-      <div className="mono" style={{ fontSize: 12, width: 24, textAlign: "right" }}>
-        #{to}
-      </div>
-    </div>
-  );
-};
-
-const SeoCheck = ({ tone, label, note }: { tone: "ok" | "warn" | "crit"; label: string; note: string }) => {
-  const map = {
-    ok: { badgeTone: "ok" as const, badgeText: "Pass" },
-    warn: { badgeTone: "high" as const, badgeText: "Warning" },
-    crit: { badgeTone: "crit" as const, badgeText: "Error" },
-  };
-  const m = map[tone];
-  return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "130px 80px 1fr",
-        gap: 12,
-        alignItems: "center",
-        padding: "8px 0",
-        borderBottom: "1px solid var(--border-soft)",
-      }}
-    >
-      <div style={{ fontSize: 13, fontWeight: 500 }}>{label}</div>
-      <div>
-        <Badge tone={m.badgeTone}>{m.badgeText}</Badge>
-      </div>
-      <div className="dim" style={{ fontSize: 12.5 }}>
-        {note}
-      </div>
-    </div>
-  );
-};
-
-const IndexCell = ({ label, value, tone }: { label: string; value: number; tone: "ok" | "med" | "low" }) => (
-  <div
-    style={{
-      padding: "12px 14px",
-      background: "rgba(255,255,255,0.025)",
-      border: "1px solid var(--border-soft)",
-      borderRadius: 10,
-    }}
-  >
-    <div className="label-strip" style={{ marginBottom: 4 }}>
-      {label}
-    </div>
-    <div
-      className="mono"
-      style={{
-        fontSize: 20,
-        fontWeight: 600,
-        color: tone === "ok" ? "var(--green)" : tone === "med" ? "var(--amber)" : "var(--text-tertiary)",
-      }}
-    >
-      {value}
     </div>
   </div>
 );
@@ -3308,3 +3276,807 @@ function HistoryTab({ site }: { site: Site }) {
     </div>
   );
 }
+
+// ============ Integrations Tab ============
+
+interface SyncStats {
+  ga: { today: number; total: number; lastSyncedAt: string | null };
+  gsc: { today: number; total: number; lastSyncedAt: string | null };
+  clarity: { today: number; total: number; lastSyncedAt: string | null; dailyLimit: number };
+}
+
+/** Small pill showing scan stats for one integration. */
+const SyncStatsPill = ({
+  today, total, lastSyncedAt,
+}: {
+  today: number; total: number; lastSyncedAt: string | null;
+}) => {
+  const lastStr = lastSyncedAt
+    ? (() => {
+        const d = new Date(lastSyncedAt);
+        const now = new Date();
+        const diffMs = now.getTime() - d.getTime();
+        const diffMins = Math.floor(diffMs / 60000);
+        if (diffMins < 2) return 'just now';
+        if (diffMins < 60) return `${diffMins}m ago`;
+        const diffH = Math.floor(diffMins / 60);
+        if (diffH < 24) return `${diffH}h ago`;
+        return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+      })()
+    : null;
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 12, color: 'var(--text-secondary)' }}>
+      {lastStr && (
+        <span title={lastSyncedAt ?? undefined}>
+          Last synced: <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{lastStr}</span>
+        </span>
+      )}
+      <span>
+        Today: <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{today}×</span>
+      </span>
+      <span>
+        Total: <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{total}</span>
+      </span>
+    </div>
+  );
+};
+
+/** Clarity daily-limit progress bar */
+const ClarityBalance = ({ used, limit }: { used: number; limit: number }) => {
+  const pct = Math.min(100, (used / Math.max(limit, 1)) * 100);
+  const tone = pct >= 90 ? 'var(--red)' : pct >= 60 ? 'var(--amber)' : 'var(--green)';
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, color: 'var(--text-secondary)', marginTop: 4 }}>
+      <span>Daily calls: <span style={{ color: tone, fontWeight: 600 }}>{used} / {limit}</span></span>
+      <div style={{ flex: 1, maxWidth: 120, height: 4, background: 'var(--bg-inset)', borderRadius: 3, overflow: 'hidden' }}>
+        <div style={{ width: `${pct}%`, height: '100%', background: tone, borderRadius: 3, transition: 'width 0.3s' }} />
+      </div>
+      <span style={{ color: 'var(--text-tertiary)' }}>{limit - used} remaining</span>
+    </div>
+  );
+};
+
+const IntegrationsTab = ({
+  site,
+  wpKeyMasked,
+  wpKeyGenerating,
+  newlyGeneratedKey,
+  onGenerateKey,
+  onIntegrationSaved,
+  syncStats: initialSyncStats,
+}: {
+  site: { id: string; name: string };
+  wpKeyMasked: string | null;
+  wpKeyGenerating: boolean;
+  newlyGeneratedKey: string | null;
+  onGenerateKey: () => void;
+  onIntegrationSaved?: () => void;
+  syncStats: SyncStats | null;
+}) => {
+  const [fields, setFields] = useState({ gaPropertyId: '', gscSiteUrl: '', clarityProjectId: '', clarityApiKey: '' });
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [copied, setCopied] = useState<string | null>(null);
+
+  // Local sync state — updated optimistically after each rescan
+  const [syncStats, setSyncStats] = useState<SyncStats | null>(initialSyncStats);
+  const [scanning, setScanning] = useState<Record<string, boolean>>({ ga: false, gsc: false, clarity: false });
+  const [scanResult, setScanResult] = useState<Record<string, string | null>>({ ga: null, gsc: null, clarity: null });
+
+  // Keep syncStats in sync with parent (on tab re-mount / refresh)
+  useEffect(() => { setSyncStats(initialSyncStats); }, [initialSyncStats]);
+
+  useEffect(() => {
+    apiFetch(`/api/analytics/integrations?siteId=${site.id}`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => {
+        if (d?.integration) {
+          setFields((f) => ({
+            ...f,
+            gaPropertyId: d.integration.ga_property_id || '',
+            gscSiteUrl: d.integration.gsc_site_url || '',
+            clarityProjectId: d.integration.clarity_project_id || '',
+          }));
+        }
+        setLoaded(true);
+      })
+      .catch(() => setLoaded(true));
+  }, [site.id]);
+
+  const save = async () => {
+    setSaving(true);
+    setSaveError('');
+    const res = await apiFetch('/api/analytics/integrations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        siteId: site.id,
+        gaPropertyId: fields.gaPropertyId || null,
+        gscSiteUrl: fields.gscSiteUrl || null,
+        clarityProjectId: fields.clarityProjectId || null,
+        clarityApiKey: fields.clarityApiKey || null,
+      }),
+    }).catch(() => null);
+    if (res?.ok) {
+      setSaved(true);
+      setFields((f) => ({ ...f, clarityApiKey: '' }));
+      onIntegrationSaved?.();
+      setTimeout(() => setSaved(false), 2500);
+    } else {
+      setSaveError('Failed to save. Check your connection and try again.');
+    }
+    setSaving(false);
+  };
+
+  const rescan = async (source: 'ga' | 'gsc' | 'clarity') => {
+    setScanning((s) => ({ ...s, [source]: true }));
+    setScanResult((r) => ({ ...r, [source]: null }));
+    try {
+      const res = await apiFetch('/api/analytics/sync-one', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ siteId: site.id, source }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 429) {
+        setScanResult((r) => ({ ...r, [source]: `Daily limit reached — ${data.usedToday ?? '?'} / ${data.limit ?? '?'} calls used` }));
+      } else if (!data.ok) {
+        setScanResult((r) => ({ ...r, [source]: data.error ?? 'Sync failed' }));
+      } else {
+        // Optimistically update counters
+        setSyncStats((prev) => {
+          if (!prev) return prev;
+          const c = data.counts ?? {};
+          return {
+            ...prev,
+            [source]: {
+              ...prev[source as keyof SyncStats],
+              today: c.today ?? (prev[source as keyof SyncStats] as { today: number }).today + 1,
+              total: c.total ?? (prev[source as keyof SyncStats] as { total: number }).total + 1,
+              lastSyncedAt: data.syncedAt ?? new Date().toISOString(),
+              ...(source === 'clarity' ? { dailyLimit: c.dailyLimit ?? (prev.clarity.dailyLimit) } : {}),
+            },
+          };
+        });
+        setScanResult((r) => ({ ...r, [source]: 'Synced successfully' }));
+        onIntegrationSaved?.(); // Refresh parent analytics snapshot
+        setTimeout(() => setScanResult((r) => ({ ...r, [source]: null })), 4000);
+      }
+    } catch {
+      setScanResult((r) => ({ ...r, [source]: 'Network error — try again' }));
+    }
+    setScanning((s) => ({ ...s, [source]: false }));
+  };
+
+  const copy = (text: string, key: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(key);
+      setTimeout(() => setCopied(null), 2000);
+    });
+  };
+
+  const IntegCard = ({
+    title, icon, status, children,
+  }: {
+    title: string; icon: string; status: 'connected' | 'not_connected'; children: React.ReactNode;
+  }) => (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="card-head">
+        <h3><Icon name={icon as Parameters<typeof Icon>[0]['name']} size={14} /> {title}</h3>
+        <Badge tone={status === 'connected' ? 'ok' : 'ghost'} dot>
+          {status === 'connected' ? 'Connected' : 'Not connected'}
+        </Badge>
+      </div>
+      <div className="card-pad">{children}</div>
+    </div>
+  );
+
+  if (!loaded) {
+    return (
+      <div className="card card-pad" style={{ textAlign: 'center', padding: 48 }}>
+        <span className="muted">Loading integration settings…</span>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ maxWidth: 760 }}>
+      {/* WordPress Plugin Connection */}
+      <IntegCard title="WordPress Plugin" icon="wp" status={wpKeyMasked ? 'connected' : 'not_connected'}>
+        <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.6 }}>
+          Install the <strong>Eye of Horus Client</strong> plugin on this WordPress site, then paste this API key into the plugin settings page.
+        </div>
+        {wpKeyMasked ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 13, background: 'var(--bg-inset)', border: '1px solid var(--border-soft)', borderRadius: 8, padding: '8px 14px', flex: 1 }}>
+              {newlyGeneratedKey || wpKeyMasked}
+            </div>
+            <button className="btn sm" onClick={() => copy(newlyGeneratedKey || wpKeyMasked!, 'wp')} type="button">
+              {copied === 'wp' ? 'Copied!' : 'Copy'}
+            </button>
+            <button className="btn ghost sm" onClick={onGenerateKey} disabled={wpKeyGenerating} type="button">
+              {wpKeyGenerating ? 'Rotating…' : 'Rotate key'}
+            </button>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span className="muted" style={{ fontSize: 13 }}>No API key generated yet.</span>
+            <button className="btn primary sm" onClick={onGenerateKey} disabled={wpKeyGenerating} type="button">
+              {wpKeyGenerating ? 'Generating…' : 'Generate API key'}
+            </button>
+          </div>
+        )}
+        {newlyGeneratedKey && (
+          <div style={{ marginTop: 10, padding: '10px 14px', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.25)', borderRadius: 8, fontSize: 12.5, color: 'var(--green)' }}>
+            Key generated — copy it now. It will not be shown again in full.
+          </div>
+        )}
+      </IntegCard>
+
+      {/* Google Analytics 4 */}
+      <IntegCard title="Google Analytics 4" icon="activity" status={fields.gaPropertyId ? 'connected' : 'not_connected'}>
+        {/* Sync stats + rescan */}
+        {fields.gaPropertyId && syncStats && (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, padding: '10px 14px', background: 'var(--bg-inset)', borderRadius: 8, border: '1px solid var(--border-soft)' }}>
+            <SyncStatsPill today={syncStats.ga.today} total={syncStats.ga.total} lastSyncedAt={syncStats.ga.lastSyncedAt} />
+            <button
+              className="btn ghost sm"
+              onClick={() => rescan('ga')}
+              disabled={scanning.ga || !fields.gaPropertyId}
+              type="button"
+              style={{ flexShrink: 0 }}
+            >
+              <Icon name="refresh" size={12} /> {scanning.ga ? 'Syncing…' : 'Sync now'}
+            </button>
+          </div>
+        )}
+        {scanResult.ga && (
+          <div style={{ marginBottom: 10, fontSize: 12.5, color: scanResult.ga.startsWith('Synced') ? 'var(--green)' : 'var(--red)' }}>
+            {scanResult.ga}
+          </div>
+        )}
+        <div className="field" style={{ marginBottom: 0 }}>
+          <label>GA4 Property ID</label>
+          <input
+            type="text"
+            className="input"
+            placeholder="G-XXXXXXXXXX or 123456789"
+            value={fields.gaPropertyId}
+            onChange={(e) => setFields((f) => ({ ...f, gaPropertyId: e.target.value }))}
+          />
+          <div className="muted" style={{ fontSize: 11, marginTop: 5 }}>
+            Found in Google Analytics → Admin → Property Settings. Also requires <code style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5 }}>GOOGLE_SERVICE_ACCOUNT_JSON</code> env var.
+          </div>
+        </div>
+      </IntegCard>
+
+      {/* Google Search Console */}
+      <IntegCard title="Google Search Console" icon="search" status={fields.gscSiteUrl ? 'connected' : 'not_connected'}>
+        {/* Sync stats + rescan */}
+        {fields.gscSiteUrl && syncStats && (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, padding: '10px 14px', background: 'var(--bg-inset)', borderRadius: 8, border: '1px solid var(--border-soft)' }}>
+            <SyncStatsPill today={syncStats.gsc.today} total={syncStats.gsc.total} lastSyncedAt={syncStats.gsc.lastSyncedAt} />
+            <button
+              className="btn ghost sm"
+              onClick={() => rescan('gsc')}
+              disabled={scanning.gsc || !fields.gscSiteUrl}
+              type="button"
+              style={{ flexShrink: 0 }}
+            >
+              <Icon name="refresh" size={12} /> {scanning.gsc ? 'Syncing…' : 'Sync now'}
+            </button>
+          </div>
+        )}
+        {scanResult.gsc && (
+          <div style={{ marginBottom: 10, fontSize: 12.5, color: scanResult.gsc.startsWith('Synced') ? 'var(--green)' : 'var(--red)' }}>
+            {scanResult.gsc}
+          </div>
+        )}
+        <div className="field" style={{ marginBottom: 0 }}>
+          <label>Verified Site URL</label>
+          <input
+            type="url"
+            className="input"
+            placeholder="https://example.co.za/"
+            value={fields.gscSiteUrl}
+            onChange={(e) => setFields((f) => ({ ...f, gscSiteUrl: e.target.value }))}
+          />
+          <div className="muted" style={{ fontSize: 11, marginTop: 5 }}>
+            Must match the exact property URL verified in Search Console. Also requires <code style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5 }}>GOOGLE_SERVICE_ACCOUNT_JSON</code> env var.
+          </div>
+        </div>
+      </IntegCard>
+
+      {/* Microsoft Clarity */}
+      <IntegCard title="Microsoft Clarity" icon="activity" status={fields.clarityProjectId ? 'connected' : 'not_connected'}>
+        {/* Sync stats + rescan + daily balance */}
+        {fields.clarityProjectId && syncStats && (
+          <div style={{ marginBottom: 14, padding: '10px 14px', background: 'var(--bg-inset)', borderRadius: 8, border: '1px solid var(--border-soft)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <SyncStatsPill today={syncStats.clarity.today} total={syncStats.clarity.total} lastSyncedAt={syncStats.clarity.lastSyncedAt} />
+              <button
+                className="btn ghost sm"
+                onClick={() => rescan('clarity')}
+                disabled={scanning.clarity || !fields.clarityProjectId || syncStats.clarity.today >= syncStats.clarity.dailyLimit}
+                type="button"
+                style={{ flexShrink: 0 }}
+              >
+                <Icon name="refresh" size={12} /> {scanning.clarity ? 'Syncing…' : 'Sync now'}
+              </button>
+            </div>
+            <ClarityBalance used={syncStats.clarity.today} limit={syncStats.clarity.dailyLimit} />
+          </div>
+        )}
+        {scanResult.clarity && (
+          <div style={{ marginBottom: 10, fontSize: 12.5, color: scanResult.clarity.startsWith('Synced') ? 'var(--green)' : 'var(--red)' }}>
+            {scanResult.clarity}
+          </div>
+        )}
+        <div className="field">
+          <label>Project ID</label>
+          <input
+            type="text"
+            className="input"
+            placeholder="abc123xyz"
+            value={fields.clarityProjectId}
+            onChange={(e) => setFields((f) => ({ ...f, clarityProjectId: e.target.value }))}
+          />
+          <div className="muted" style={{ fontSize: 11, marginTop: 5 }}>Found in Clarity → Settings → Overview.</div>
+        </div>
+        <div className="field" style={{ marginBottom: 0 }}>
+          <label>
+            API Key{' '}
+            <span className="muted" style={{ fontSize: 11, fontWeight: 400 }}>(optional — enables pulling session data)</span>
+          </label>
+          <input
+            type="password"
+            className="input"
+            placeholder="Enter new key to update, leave blank to keep existing"
+            value={fields.clarityApiKey}
+            onChange={(e) => setFields((f) => ({ ...f, clarityApiKey: e.target.value }))}
+            autoComplete="new-password"
+          />
+          <div className="muted" style={{ fontSize: 11, marginTop: 5 }}>Found in Clarity → Settings → API access.</div>
+        </div>
+      </IntegCard>
+
+      {/* Save row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4 }}>
+        <button className="btn primary" onClick={save} disabled={saving} type="button">
+          {saving ? 'Saving…' : 'Save integrations'}
+        </button>
+        {saved && <span style={{ fontSize: 13, color: 'var(--green)' }}>Saved successfully</span>}
+        {saveError && <span style={{ fontSize: 13, color: 'var(--red)' }}>{saveError}</span>}
+      </div>
+    </div>
+  );
+};
+
+// ─── Performance Tab ─────────────────────────────────────────────────────────
+const PerformanceTab = ({
+  metrics,
+  uptimeHistory,
+  issues,
+}: {
+  metrics: PerfMetricRow[];
+  uptimeHistory: UptimeCheckRow[];
+  issues: Issue[];
+}) => {
+  const [perfToast, setPerfToast] = useState<string | null>(null);
+  const showPerfToast = (msg: string) => { setPerfToast(msg); setTimeout(() => setPerfToast(null), 3000); };
+
+  const latest = {
+    desktop: metrics.find((m) => m.device === "desktop"),
+    mobile: metrics.find((m) => m.device === "mobile"),
+    tablet: metrics.find((m) => m.device === "tablet"),
+  };
+
+  const scoreColor = (s: number | null | undefined) => {
+    if (s == null) return "var(--text-tertiary)";
+    if (s >= 90) return "var(--green)";
+    if (s >= 50) return "var(--amber)";
+    return "var(--red)";
+  };
+
+  const vitals = (m: PerfMetricRow | undefined) => [
+    { label: "LCP", val: m?.lcp, unit: "s", good: 2.5, poor: 4 },
+    { label: "CLS", val: m?.cls, unit: "", good: 0.1, poor: 0.25 },
+    { label: "INP", val: m?.inp, unit: "ms", good: 200, poor: 500 },
+    { label: "FCP", val: m?.fcp, unit: "s", good: 1.8, poor: 3 },
+    { label: "TTI", val: m?.tti, unit: "s", good: 3.8, poor: 7.3 },
+  ];
+
+  const vitalColor = (val: number | null | undefined, good: number, poor: number) => {
+    if (val == null) return "var(--text-tertiary)";
+    if (val <= good) return "var(--green)";
+    if (val <= poor) return "var(--amber)";
+    return "var(--red)";
+  };
+
+  const perfIssues = issues.filter((i) => i.category === "performance");
+
+  const avgResponse =
+    uptimeHistory.length > 0
+      ? Math.round(
+          uptimeHistory.filter((u) => u.response_time_ms != null).reduce((s, u) => s + (u.response_time_ms ?? 0), 0) /
+            Math.max(uptimeHistory.filter((u) => u.response_time_ms != null).length, 1)
+        )
+      : null;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      {/* Lighthouse scores */}
+      {(["desktop", "mobile", "tablet"] as const).map((device) => {
+        const m = latest[device];
+        return (
+          <div key={device} className="card">
+            <div className="card-head">
+              <h3 style={{ textTransform: "capitalize" }}>
+                <Icon name={device === "desktop" ? "monitor" : device === "mobile" ? "smartphone" : "tablet"} size={14} />
+                {" "}{device} — Lighthouse
+              </h3>
+              {m && <span className="h-sub">{new Date(m.created_at).toLocaleDateString()}</span>}
+            </div>
+            {m ? (
+              <>
+                <div className="grid-4" style={{ padding: "14px 18px 6px" }}>
+                  {[
+                    { label: "Performance", val: m.performance_score },
+                    { label: "Accessibility", val: m.accessibility_score },
+                    { label: "Best Practices", val: m.best_practices_score },
+                    { label: "SEO", val: m.seo_score },
+                  ].map(({ label, val }) => (
+                    <div key={label} style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: 26, fontWeight: 700, color: scoreColor(val), fontFamily: "var(--font-display)" }}>
+                        {val ?? "—"}
+                      </div>
+                      <div className="dim" style={{ fontSize: 11 }}>{label}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ padding: "10px 18px 14px", display: "flex", flexWrap: "wrap", gap: 10 }}>
+                  {vitals(m).map(({ label, val, unit, good, poor }) => (
+                    <div key={label} style={{ flex: "1 1 90px", padding: "8px 12px", background: "rgba(255,255,255,0.025)", borderRadius: 8, border: "1px solid var(--border-soft)" }}>
+                      <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginBottom: 4 }}>{label}</div>
+                      <div style={{ fontSize: 16, fontWeight: 700, color: vitalColor(val, good, poor), fontFamily: "var(--font-mono)" }}>
+                        {val != null ? `${val}${unit}` : "—"}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="empty" style={{ padding: "28px 18px" }}>No {device} data yet. Run a scan to collect Lighthouse metrics.</div>
+            )}
+          </div>
+        );
+      })}
+
+      {/* Response time summary */}
+      {avgResponse != null && (
+        <div className="card">
+          <div className="card-head">
+            <h3><Icon name="clock" size={14} /> Response time</h3>
+            <span className="h-sub">last {uptimeHistory.length} checks</span>
+          </div>
+          <div style={{ padding: "14px 18px", display: "flex", alignItems: "center", gap: 18 }}>
+            <div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: avgResponse < 800 ? "var(--green)" : avgResponse < 2000 ? "var(--amber)" : "var(--red)", fontFamily: "var(--font-display)" }}>
+                {avgResponse}ms
+              </div>
+              <div className="dim" style={{ fontSize: 12 }}>avg response time</div>
+            </div>
+            <div style={{ flex: 1, height: 48 }}>
+              <Sparkline
+                points={[...uptimeHistory].reverse().map((u) => u.response_time_ms ?? 0)}
+                height={48}
+                color={avgResponse < 800 ? "#22C55E" : avgResponse < 2000 ? "#F59E0B" : "#EF4444"}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Performance issues */}
+      {perfIssues.length > 0 && (
+        <div className="card">
+          <div className="card-head">
+            <h3><Icon name="issue" size={14} /> Performance issues</h3>
+            <Badge tone="high" dot>{perfIssues.length}</Badge>
+          </div>
+          <div>
+            {perfIssues.map((iss) => (
+              <div key={iss.id} className="feed-item">
+                <SeverityChip level={iss.severity} />
+                <div className="feed-body">
+                  <div className="feed-title">{iss.title}</div>
+                  <div className="feed-meta"><span className="mono">{new Date(iss.detected).toLocaleDateString()}</span></div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {metrics.length === 0 && avgResponse == null && (
+        <div className="card">
+          <div className="empty" style={{ padding: "40px 18px" }}>
+            No performance data yet. Run a scan to collect Lighthouse and response time metrics.
+          </div>
+        </div>
+      )}
+
+      <button className="btn" style={{ alignSelf: "flex-start" }} onClick={() => { window.print(); showPerfToast("Printing performance report…"); }} type="button">
+        <Icon name="download" size={13} /> Export report
+      </button>
+      {perfToast && (
+        <div style={{ position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)", background: "var(--bg-card)", border: "1px solid var(--border-soft)", borderRadius: 10, padding: "10px 20px", fontSize: 13, fontWeight: 500, color: "var(--text-primary)", boxShadow: "0 4px 24px rgba(0,0,0,0.5)", zIndex: 9999, pointerEvents: "none" }}>{perfToast}</div>
+      )}
+    </div>
+  );
+};
+
+// ─── Security Tab ─────────────────────────────────────────────────────────────
+const SecurityTab = ({
+  latestCheck,
+  domainCheck,
+  siteUrl,
+  issues,
+  wpSnapshot,
+}: {
+  latestCheck: UptimeCheckRow | null;
+  domainCheck: DomainCheckRow | null;
+  siteUrl: string;
+  issues: Issue[];
+  wpSnapshot: WpSnapshot | null;
+}) => {
+  const secIssues = issues.filter((i) => i.category === "security");
+
+  const sslDays = latestCheck?.ssl_days_remaining;
+  const sslValid = latestCheck?.ssl_valid;
+  const sslExpiry = latestCheck?.ssl_expiry_date;
+  const domainDays = domainCheck?.days_remaining;
+
+  const statusTone = (days: number | null | undefined, goodThreshold = 30) => {
+    if (days == null) return "var(--text-tertiary)";
+    if (days > goodThreshold) return "var(--green)";
+    if (days > 7) return "var(--amber)";
+    return "var(--red)";
+  };
+
+  const secData = wpSnapshot?.security_data;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      {/* SSL + domain status cards */}
+      <div className="grid-4">
+        <div className="card kpi-card">
+          <div className="kpi-head"><Icon name="shield" size={13} /> SSL certificate</div>
+          <div className="kpi-value" style={{ color: sslValid ? "var(--green)" : "var(--red)", fontSize: 20 }}>
+            {sslValid == null ? "Unknown" : sslValid ? "Valid" : "Invalid"}
+          </div>
+          <div className="kpi-foot dim">
+            {sslDays != null ? `${sslDays} days remaining` : "No data"}
+            {sslExpiry ? ` · expires ${new Date(sslExpiry).toLocaleDateString()}` : ""}
+          </div>
+        </div>
+        <div className="card kpi-card">
+          <div className="kpi-head"><Icon name="globe" size={13} /> Domain expiry</div>
+          <div className="kpi-value" style={{ color: statusTone(domainDays, 60), fontSize: 20 }}>
+            {domainDays != null ? `${domainDays}d` : "Unknown"}
+          </div>
+          <div className="kpi-foot dim">
+            {domainCheck?.expiry_date ? new Date(domainCheck.expiry_date).toLocaleDateString() : "No data"}
+            {domainCheck?.registrar ? ` · ${domainCheck.registrar}` : ""}
+          </div>
+        </div>
+        <div className="card kpi-card">
+          <div className="kpi-head"><Icon name="wp" size={13} /> WP debug mode</div>
+          <div className="kpi-value" style={{ color: secData?.debug_mode ? "var(--red)" : "var(--green)", fontSize: 20 }}>
+            {secData == null ? "Unknown" : secData.debug_mode ? "On" : "Off"}
+          </div>
+          <div className="kpi-foot dim">{secData?.debug_mode ? "Debug mode should be off in production" : "No public debug exposure"}</div>
+        </div>
+        <div className="card kpi-card">
+          <div className="kpi-head"><Icon name="user" size={13} /> Admin accounts</div>
+          <div className="kpi-value" style={{ color: (secData?.admin_users ?? 0) > 3 ? "var(--amber)" : "var(--green)", fontSize: 20 }}>
+            {secData?.admin_users ?? "—"}
+          </div>
+          <div className="kpi-foot dim">
+            {secData?.security_plugin ? `Protected by ${secData.security_plugin}` : "No security plugin detected"}
+          </div>
+        </div>
+      </div>
+
+      {/* Error log */}
+      {secData?.error_log_lines && secData.error_log_lines.length > 0 && (
+        <div className="card">
+          <div className="card-head">
+            <h3><Icon name="issue" size={14} /> Recent error log entries</h3>
+            <Badge tone="high" dot>{secData.error_log_lines.length}</Badge>
+          </div>
+          <div style={{ padding: "10px 18px", display: "flex", flexDirection: "column", gap: 6 }}>
+            {secData.error_log_lines.slice(0, 10).map((line, i) => (
+              <div key={i} style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, color: "var(--text-secondary)", padding: "5px 8px", background: "rgba(239,68,68,0.05)", borderRadius: 6, border: "1px solid rgba(239,68,68,0.1)" }}>
+                {line}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Security issues */}
+      {secIssues.length > 0 && (
+        <div className="card">
+          <div className="card-head">
+            <h3><Icon name="issue" size={14} /> Security issues</h3>
+            <Badge tone="crit" dot>{secIssues.length}</Badge>
+          </div>
+          <div>
+            {secIssues.map((iss) => (
+              <div key={iss.id} className="feed-item">
+                <SeverityChip level={iss.severity} />
+                <div className="feed-body">
+                  <div className="feed-title">{iss.title}</div>
+                  <div className="feed-meta"><span>{iss.impact}</span></div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {secIssues.length === 0 && !secData && !latestCheck && (
+        <div className="card">
+          <div className="empty" style={{ padding: "40px 18px" }}>
+            No security data yet. Run a scan or connect the WordPress plugin to collect security information.
+          </div>
+        </div>
+      )}
+
+      {secIssues.length === 0 && (secData || latestCheck) && (
+        <div className="card">
+          <div className="empty" style={{ padding: "28px 18px", color: "var(--green)" }}>
+            <Icon name="check" size={16} /> No active security issues detected.
+          </div>
+        </div>
+      )}
+
+      <div className="dim" style={{ fontSize: 11.5, marginTop: 4 }}>
+        Monitoring: {siteUrl}
+      </div>
+    </div>
+  );
+};
+
+// ─── Forms Tab ────────────────────────────────────────────────────────────────
+const FormsTab = ({
+  formChecks,
+  wpSnapshot,
+  onRunChecks,
+}: {
+  formChecks: FormCheckRow[];
+  wpSnapshot: WpSnapshot | null;
+  onRunChecks: () => void;
+}) => {
+  const [formsToast, setFormsToast] = useState<string | null>(null);
+  const showFormsToast = (msg: string) => { setFormsToast(msg); setTimeout(() => setFormsToast(null), 3000); };
+
+  const passing = formChecks.filter((f) => f.status === "pass").length;
+  const failing = formChecks.filter((f) => f.status === "fail" || f.status === "error").length;
+  const skipped = formChecks.filter((f) => f.status === "skip").length;
+
+  const wpForms = wpSnapshot?.form_data ?? [];
+
+  const statusTone = (s: FormCheckRow["status"]) => {
+    if (s === "pass") return "ok";
+    if (s === "fail" || s === "error") return "crit";
+    return "high";
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      {/* Summary */}
+      <div className="grid-4">
+        <div className="card kpi-card">
+          <div className="kpi-head"><Icon name="check" size={13} /> Passing</div>
+          <div className="kpi-value" style={{ color: "var(--green)" }}>{passing}</div>
+          <div className="kpi-foot dim">form checks passed</div>
+        </div>
+        <div className="card kpi-card">
+          <div className="kpi-head"><Icon name="issue" size={13} /> Failing</div>
+          <div className="kpi-value" style={{ color: failing > 0 ? "var(--red)" : "var(--green)" }}>{failing}</div>
+          <div className="kpi-foot dim">{failing > 0 ? "requires attention" : "no failures"}</div>
+        </div>
+        <div className="card kpi-card">
+          <div className="kpi-head"><Icon name="clock" size={13} /> Skipped</div>
+          <div className="kpi-value" style={{ color: "var(--text-tertiary)" }}>{skipped}</div>
+          <div className="kpi-foot dim">not tested</div>
+        </div>
+        <div className="card kpi-card">
+          <div className="kpi-head"><Icon name="bolt" size={13} /> Detected</div>
+          <div className="kpi-value" style={{ color: "var(--cyan)" }}>{wpForms.length}</div>
+          <div className="kpi-foot dim">form plugins/forms via WP</div>
+        </div>
+      </div>
+
+      {/* Form checks list */}
+      {formChecks.length > 0 ? (
+        <div className="card">
+          <div className="card-head">
+            <h3><Icon name="check" size={14} /> Form check results</h3>
+            <button className="btn sm" onClick={() => { onRunChecks(); showFormsToast("Form checks queued…"); }} type="button">
+              <Icon name="play" size={12} /> Re-run checks
+            </button>
+          </div>
+          <div>
+            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1.2fr", gap: 12, padding: "8px 18px", borderBottom: "1px solid var(--border-soft)", fontSize: 11, color: "var(--text-tertiary)" }}>
+              <div>Form · Page</div>
+              <div>Plugin</div>
+              <div>Status</div>
+              <div>Tested</div>
+            </div>
+            {formChecks.map((f) => (
+              <div key={f.id} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1.2fr", gap: 12, padding: "12px 18px", borderBottom: "1px solid var(--border-soft)", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontSize: 13.5, fontWeight: 600 }}>{f.form_name}</div>
+                  {f.page_url && <div className="dim" style={{ fontSize: 11.5 }}>{f.page_url}</div>}
+                  {f.result_message && <div style={{ fontSize: 11.5, color: f.status === "pass" ? "var(--green)" : "var(--red)", marginTop: 2 }}>{f.result_message}</div>}
+                </div>
+                <div className="dim" style={{ fontSize: 12 }}>{f.form_plugin ?? "Unknown"}</div>
+                <div><Badge tone={statusTone(f.status)}>{f.status}</Badge></div>
+                <div className="dim" style={{ fontSize: 12 }}>{f.submission_tested ? "Submission tested" : "Visibility only"}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="card">
+          <div className="card-head">
+            <h3><Icon name="check" size={14} /> Form checks</h3>
+            <button className="btn sm" onClick={() => { onRunChecks(); showFormsToast("Form checks queued…"); }} type="button">
+              <Icon name="play" size={12} /> Run checks
+            </button>
+          </div>
+          <div className="empty" style={{ padding: "40px 18px" }}>
+            No form checks yet. Run a scan to test forms on this site.
+          </div>
+        </div>
+      )}
+
+      {/* WordPress form plugins detected */}
+      {wpForms.length > 0 && (
+        <div className="card">
+          <div className="card-head">
+            <h3><Icon name="wp" size={14} /> Detected form plugins</h3>
+            <span className="h-sub">from WordPress plugin</span>
+          </div>
+          <div>
+            {wpForms.map((f, i) => (
+              <div key={i} className="feed-item">
+                <div className="feed-icon" style={{ color: f.active ? "var(--green)" : "var(--text-dim)", borderColor: f.active ? "rgba(34,197,94,0.3)" : "var(--border-soft)" }}>
+                  <Icon name="bolt" size={13} />
+                </div>
+                <div className="feed-body">
+                  <div className="feed-title">{f.name ?? f.plugin}</div>
+                  <div className="feed-meta">
+                    <span>{f.plugin}</span>
+                    {f.submissions != null && <><span className="pip" /><span>{f.submissions} submissions</span></>}
+                  </div>
+                </div>
+                <Badge tone={f.active ? "ok" : "high"}>{f.active ? "Active" : "Inactive"}</Badge>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {formsToast && (
+        <div style={{ position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)", background: "var(--bg-card)", border: "1px solid var(--border-soft)", borderRadius: 10, padding: "10px 20px", fontSize: 13, fontWeight: 500, color: "var(--text-primary)", boxShadow: "0 4px 24px rgba(0,0,0,0.5)", zIndex: 9999, pointerEvents: "none" }}>{formsToast}</div>
+      )}
+    </div>
+  );
+};

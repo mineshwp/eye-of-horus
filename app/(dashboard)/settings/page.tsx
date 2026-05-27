@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { useApp } from "@/context/AppContext";
 import { apiFetch } from "@/lib/auth/index";
 import {
@@ -23,6 +24,15 @@ interface AlertSettings {
 
 export default function SettingsPage() {
   const { sites } = useApp();
+  const router = useRouter();
+  const [toast, setToast] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  const [activeSection, setActiveSection] = useState("sites");
 
   const [scanFreq, setScanFreq] = useState("Every 15 minutes");
   const [toggles, setToggles] = useState<Record<string, boolean>>({
@@ -53,6 +63,11 @@ export default function SettingsPage() {
   const [newWaRecipient, setNewWaRecipient] = useState('');
   const [testAlertStatus, setTestAlertStatus] = useState<string | null>(null);
 
+  // Analytics auto-sync time (stored in global_settings, "HH:MM" UTC)
+  const [analyticsSyncTime, setAnalyticsSyncTime] = useState('02:00');
+  const [analyticsSyncSaving, setAnalyticsSyncSaving] = useState(false);
+  const [analyticsSyncSaved, setAnalyticsSyncSaved] = useState(false);
+
   const fetchAlertSettings = useCallback(async () => {
     setAlertLoading(true);
     try {
@@ -66,7 +81,40 @@ export default function SettingsPage() {
     }
   }, []);
 
-  useEffect(() => { fetchAlertSettings(); }, [fetchAlertSettings]);
+  const fetchAnalyticsSyncTime = useCallback(async () => {
+    try {
+      const res = await apiFetch('/api/admin/settings');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.settings?.analytics_sync_time) {
+          setAnalyticsSyncTime(data.settings.analytics_sync_time);
+        }
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  const saveAnalyticsSyncTime = async () => {
+    setAnalyticsSyncSaving(true);
+    try {
+      const res = await apiFetch('/api/admin/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ analytics_sync_time: analyticsSyncTime }),
+      });
+      if (res.ok) {
+        setAnalyticsSyncSaved(true);
+        showToast(`Auto-sync scheduled for ${analyticsSyncTime} UTC daily`);
+        setTimeout(() => setAnalyticsSyncSaved(false), 3000);
+      }
+    } finally {
+      setAnalyticsSyncSaving(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchAlertSettings();
+    fetchAnalyticsSyncTime();
+  }, [fetchAlertSettings, fetchAnalyticsSyncTime]);
 
   const saveAlertSettings = async (updates: Partial<AlertSettings>) => {
     if (!alertSettings) return;
@@ -155,11 +203,25 @@ export default function SettingsPage() {
   const flipVp = (k: string) => setViewports((v) => ({ ...v, [k]: !v[k] }));
 
   const handleExportConfig = () => {
-    alert("Horus configuration exported to horus-config.json. System integrations remain online.");
+    const config = {
+      exported_at: new Date().toISOString(),
+      scan_frequency: scanFreq,
+      viewports,
+      detection_rules: toggles,
+      sites: sites.map((s) => ({ id: s.id, name: s.name, url: s.url, status: s.status })),
+    };
+    const blob = new Blob([JSON.stringify(config, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "horus-config.json";
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast("Config exported to horus-config.json");
   };
 
   const handleAddSite = () => {
-    alert("Opening onboarding flow... Enter website name, target URL, and WordPress integration key.");
+    router.push("/admin/clients");
   };
 
   return (
@@ -187,17 +249,19 @@ export default function SettingsPage() {
       <div style={{ display: "grid", gridTemplateColumns: "240px 1fr", gap: 24 }}>
         <aside style={{ position: "sticky", top: 90, height: "fit-content" }}>
           <div className="card" style={{ padding: 8, display: "flex", flexDirection: "column", gap: 2 }}>
-            <SideLink label="Sites & scanning" active />
-            <SideLink label="Detection rules" />
-            <SideLink label="Alert routing" />
-            <SideLink label="Integrations" />
-            <SideLink label="Team & permissions" />
-            <SideLink label="API & webhooks" />
-            <SideLink label="Billing" />
+            <SideLink label="Sites & scanning" active={activeSection === "sites"} onClick={() => setActiveSection("sites")} />
+            <SideLink label="Detection rules" active={activeSection === "detection"} onClick={() => setActiveSection("detection")} />
+            <SideLink label="Alert routing" active={activeSection === "alerts"} onClick={() => setActiveSection("alerts")} />
+            <SideLink label="Integrations" active={activeSection === "integrations"} onClick={() => setActiveSection("integrations")} />
+            <SideLink label="Team & permissions" active={activeSection === "team"} onClick={() => setActiveSection("team")} />
+            <SideLink label="API & webhooks" active={activeSection === "api"} onClick={() => setActiveSection("api")} />
+            <SideLink label="Billing" active={activeSection === "billing"} onClick={() => setActiveSection("billing")} />
           </div>
         </aside>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          {activeSection === "integrations" && <GlobalApiKeysCard />}
+          {activeSection !== "integrations" && <>
           {/* Monitored sites */}
           <div className="card">
             <div className="card-head">
@@ -237,7 +301,7 @@ export default function SettingsPage() {
                     <Badge tone={s.status === "healthy" ? "ok" : s.status === "critical" ? "crit" : "high"} dot>
                       {s.status.charAt(0).toUpperCase() + s.status.slice(1)}
                     </Badge>
-                    <button className="btn ghost sm" onClick={() => alert(`Configuring ${s.name}…`)} type="button">
+                    <button className="btn ghost sm" onClick={() => router.push(`/sites/${s.id}`)} type="button">
                       Configure
                     </button>
                   </div>
@@ -245,7 +309,7 @@ export default function SettingsPage() {
               )}
               {sites.length > 4 && (
                 <div style={{ padding: "12px 18px", textAlign: "center" }}>
-                  <button className="btn ghost sm" onClick={() => alert(`Showing all ${sites.length} sites…`)} type="button">
+                  <button className="btn ghost sm" onClick={() => router.push("/admin/clients")} type="button">
                     View all {sites.length} sites
                   </button>
                 </div>
@@ -283,7 +347,7 @@ export default function SettingsPage() {
                     <Badge tone="ghost" lg>
                       per site
                     </Badge>
-                    <button className="btn sm" onClick={() => alert("Open site detail to manage page list.")} type="button">
+                    <button className="btn sm" onClick={() => router.push("/admin/clients")} type="button">
                       Edit list
                     </button>
                   </div>
@@ -304,11 +368,75 @@ export default function SettingsPage() {
                 title="Authenticated areas"
                 desc="Provide a test login so Horus can scan logged-in pages."
                 control={
-                  <button className="btn sm" onClick={() => alert("Configure test credentials per site in Site settings.")} type="button">
+                  <button className="btn sm" onClick={() => showToast("Configure test credentials inside each site's detail page.")} type="button">
                     Configure
                   </button>
                 }
               />
+            </div>
+          </div>
+
+          {/* Analytics auto-sync */}
+          <div className="card">
+            <div className="card-head">
+              <h3>
+                <Icon name="activity" size={14} /> Analytics auto-sync
+              </h3>
+              <span className="h-sub">runs daily for all connected sites</span>
+            </div>
+            <div className="card-pad">
+              <SettingRow
+                title="Daily sync time"
+                desc={
+                  <>
+                    Horus syncs Google Analytics, Search Console, and Microsoft Clarity once per day at this time{' '}
+                    <strong>(UTC)</strong>. The cron job fires at 2:00 UTC by default — update{' '}
+                    <code style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5 }}>vercel.json</code> to match if you change this.
+                  </>
+                }
+                control={
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <input
+                      type="time"
+                      className="input"
+                      style={{ width: 120 }}
+                      value={analyticsSyncTime}
+                      onChange={(e) => setAnalyticsSyncTime(e.target.value)}
+                    />
+                    <button
+                      className="btn sm"
+                      onClick={saveAnalyticsSyncTime}
+                      disabled={analyticsSyncSaving}
+                      type="button"
+                    >
+                      {analyticsSyncSaving ? 'Saving…' : analyticsSyncSaved ? 'Saved ✓' : 'Save'}
+                    </button>
+                  </div>
+                }
+              />
+              <SettingRow
+                title="Manual trigger"
+                desc="Run analytics sync for all sites immediately. Useful after a config change or to verify credentials."
+                control={
+                  <button
+                    className="btn sm"
+                    onClick={async () => {
+                      showToast('Analytics sync triggered — check site Integration tabs for updated counts.');
+                      await apiFetch('/api/analytics/refresh', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ allSites: true }),
+                      }).catch(() => null);
+                    }}
+                    type="button"
+                  >
+                    <Icon name="refresh" size={12} /> Sync all sites now
+                  </button>
+                }
+              />
+              <div style={{ padding: '10px 0 2px', fontSize: 12, color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
+                <strong style={{ color: 'var(--text-secondary)' }}>Clarity daily limit:</strong> Each site has a configurable daily call limit (default 10) to avoid burning through your Clarity API quota. You can adjust this per site in the site&apos;s Integration tab.
+              </div>
             </div>
           </div>
 
@@ -361,12 +489,12 @@ export default function SettingsPage() {
               </h3>
             </div>
             <div className="card-pad">
-              <AlertRule severity="critical" trigger="Critical issue detected" channels="Email alert recipients · WhatsApp if configured" />
-              <AlertRule severity="high" trigger="High severity issue · client-facing impact" channels="Email alert recipients" />
-              <AlertRule severity="medium" trigger="Visual change detected · awaiting review" channels="Daily digest" />
-              <AlertRule severity="info" trigger="WordPress update available · low risk" channels="Weekly digest" />
+              <AlertRule severity="critical" trigger="Critical issue detected" channels="Email alert recipients · WhatsApp if configured" onEdit={() => showToast("Custom alert templates coming soon.")} />
+              <AlertRule severity="high" trigger="High severity issue · client-facing impact" channels="Email alert recipients" onEdit={() => showToast("Custom alert templates coming soon.")} />
+              <AlertRule severity="medium" trigger="Visual change detected · awaiting review" channels="Daily digest" onEdit={() => showToast("Custom alert templates coming soon.")} />
+              <AlertRule severity="info" trigger="WordPress update available · low risk" channels="Weekly digest" onEdit={() => showToast("Custom alert templates coming soon.")} />
               <div style={{ marginTop: 12 }}>
-                <button className="btn ghost sm" onClick={() => alert("Custom alert rules coming soon.")} type="button">
+                <button className="btn ghost sm" onClick={() => showToast("Custom alert rules coming soon.")} type="button">
                   <Icon name="plus" size={12} /> Add custom rule
                 </button>
               </div>
@@ -518,8 +646,22 @@ export default function SettingsPage() {
 
           {/* Alert notification log */}
           <AlertLogCard />
+          </>}
         </div>
       </div>
+
+      {/* Toast */}
+      {toast && (
+        <div style={{
+          position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)",
+          background: "var(--bg-card)", border: "1px solid var(--border-soft)",
+          borderRadius: 10, padding: "10px 20px", fontSize: 13, fontWeight: 500,
+          color: "var(--text-primary)", boxShadow: "0 4px 24px rgba(0,0,0,0.5)",
+          zIndex: 9999, pointerEvents: "none",
+        }}>
+          {toast}
+        </div>
+      )}
     </div>
   );
 }
@@ -597,9 +739,10 @@ const AlertLogCard = () => {
   );
 };
 
-const SideLink = ({ label, active }: { label: string; active?: boolean }) => (
+const SideLink = ({ label, active, onClick }: { label: string; active?: boolean; onClick?: () => void }) => (
   <button
     className={`nav-item ${active ? "active" : ""}`}
+    onClick={onClick}
     style={{
       width: "100%",
       margin: "0",
@@ -619,7 +762,179 @@ const SideLink = ({ label, active }: { label: string; active?: boolean }) => (
   </button>
 );
 
-const SettingRow = ({ title, desc, control }: { title: string; desc: string; control: React.ReactNode }) => (
+// ─── Global API Keys Card ─────────────────────────────────────────────────────
+
+const GlobalApiKeysCard = () => {
+  const [fields, setFields] = useState({
+    openai_api_key: '',
+    email_provider: '',
+    email_api_key: '',
+    email_from_address: '',
+    twilio_account_sid: '',
+    twilio_auth_token: '',
+    twilio_whatsapp_from: '',
+  });
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState('');
+
+  useEffect(() => {
+    apiFetch('/api/admin/settings')
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => {
+        if (d?.settings) {
+          setFields((f) => ({ ...f, ...Object.fromEntries(Object.entries(d.settings).map(([k, v]) => [k, v ?? ''])) }));
+        }
+        setLoaded(true);
+      })
+      .catch(() => setLoaded(true));
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    setSaveError('');
+    const payload: Record<string, string | null> = {};
+    Object.entries(fields).forEach(([k, v]) => {
+      if (typeof v === 'string' && v.trim() !== '' && !v.includes('•')) {
+        payload[k] = v.trim();
+      }
+    });
+    const res = await apiFetch('/api/admin/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).catch(() => null);
+    if (res?.ok) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } else {
+      setSaveError('Failed to save. Check your connection and try again.');
+    }
+    setSaving(false);
+  };
+
+  const KeyField = ({ label, fieldKey, placeholder, type = 'text', hint }: { label: string; fieldKey: keyof typeof fields; placeholder: string; type?: string; hint?: string }) => (
+    <div className="field" style={{ marginBottom: 16 }}>
+      <label>{label}</label>
+      <input
+        type={type}
+        className="input"
+        placeholder={placeholder}
+        value={fields[fieldKey]}
+        onChange={(e) => setFields((f) => ({ ...f, [fieldKey]: e.target.value }))}
+        autoComplete="new-password"
+      />
+      {hint && <div className="muted" style={{ fontSize: 11, marginTop: 5 }}>{hint}</div>}
+    </div>
+  );
+
+  if (!loaded) {
+    return <div className="card card-pad" style={{ textAlign: 'center', padding: 48 }}><span className="muted">Loading global settings…</span></div>;
+  }
+
+  return (
+    <>
+      <div style={{ marginBottom: 16 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>
+          <Icon name="settings" size={15} /> Global integrations
+        </h2>
+        <p className="muted" style={{ fontSize: 13 }}>
+          Platform-wide API keys used by all sites. Values stored in the database override environment variables. Masked after save — re-enter to update.
+        </p>
+      </div>
+
+      {/* AI */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="card-head">
+          <h3><Icon name="sparkles" size={14} /> OpenAI</h3>
+          <span className="muted" style={{ fontSize: 12 }}>AI summaries, reports &amp; recommendations</span>
+        </div>
+        <div className="card-pad">
+          <KeyField
+            label="API Key"
+            fieldKey="openai_api_key"
+            placeholder="sk-…"
+            type="password"
+            hint="Required for all AI features. Can also be set via OPENAI_API_KEY env var."
+          />
+        </div>
+      </div>
+
+      {/* Email */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="card-head">
+          <h3><Icon name="file" size={14} /> Email provider</h3>
+          <span className="muted" style={{ fontSize: 12 }}>Alerts, daily summaries &amp; monthly reports</span>
+        </div>
+        <div className="card-pad">
+          <KeyField
+            label="Provider"
+            fieldKey="email_provider"
+            placeholder="resend / sendgrid / postmark"
+            hint="Supported: resend, sendgrid, postmark"
+          />
+          <KeyField
+            label="API Key"
+            fieldKey="email_api_key"
+            placeholder="re_…"
+            type="password"
+            hint="Can also be set via EMAIL_PROVIDER_API_KEY env var."
+          />
+          <KeyField
+            label="From address"
+            fieldKey="email_from_address"
+            placeholder="noreply@youragency.co.za"
+            hint="Must be a verified sender with your email provider."
+          />
+        </div>
+      </div>
+
+      {/* WhatsApp / Twilio */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="card-head">
+          <h3><Icon name="mobile" size={14} /> Twilio WhatsApp</h3>
+          <span className="muted" style={{ fontSize: 12 }}>Urgent alerts only</span>
+        </div>
+        <div className="card-pad">
+          <KeyField
+            label="Account SID"
+            fieldKey="twilio_account_sid"
+            placeholder="ACxxxxxxxxxxxxxxxxxxxx"
+            hint="Found in your Twilio Console dashboard."
+          />
+          <KeyField
+            label="Auth Token"
+            fieldKey="twilio_auth_token"
+            placeholder="••••••••••••••••••••••••••"
+            type="password"
+            hint="Can also be set via TWILIO_AUTH_TOKEN env var."
+          />
+          <KeyField
+            label="WhatsApp From number"
+            fieldKey="twilio_whatsapp_from"
+            placeholder="whatsapp:+14155238886"
+            hint="Your Twilio sandbox or approved WhatsApp sender number."
+          />
+        </div>
+      </div>
+
+      {/* Save */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <button className="btn primary" onClick={save} disabled={saving} type="button">
+          {saving ? 'Saving…' : 'Save global keys'}
+        </button>
+        {saved && <span style={{ fontSize: 13, color: 'var(--green)' }}>Saved successfully</span>}
+        {saveError && <span style={{ fontSize: 13, color: 'var(--red)' }}>{saveError}</span>}
+        <span className="muted" style={{ fontSize: 12, marginLeft: 'auto' }}>
+          Keys are masked after saving. Re-enter a field to update it.
+        </span>
+      </div>
+    </>
+  );
+};
+
+const SettingRow = ({ title, desc, control }: { title: string; desc: React.ReactNode; control: React.ReactNode }) => (
   <div
     style={{
       display: "grid",
@@ -663,7 +978,7 @@ const VpToggle = ({ label, icon, on, onClick }: { label: string; icon: string; o
   </button>
 );
 
-const AlertRule = ({ severity, trigger, channels }: { severity: string; trigger: string; channels: string }) => {
+const AlertRule = ({ severity, trigger, channels, onEdit }: { severity: string; trigger: string; channels: string; onEdit?: () => void }) => {
   const tone = severity === "critical" ? ("crit" as const) : severity === "high" ? ("high" as const) : severity === "medium" ? ("med" as const) : ("info" as const);
   const label = severity.charAt(0).toUpperCase() + severity.slice(1);
   return (
@@ -686,7 +1001,7 @@ const AlertRule = ({ severity, trigger, channels }: { severity: string; trigger:
           {channels}
         </div>
       </div>
-      <button className="btn ghost sm" onClick={() => alert(`Modifying templates for alert: ${label}`)} type="button">
+      <button className="btn ghost sm" onClick={onEdit} type="button">
         Edit
       </button>
     </div>

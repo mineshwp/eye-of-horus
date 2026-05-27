@@ -16,6 +16,8 @@ export default function RegressionPage() {
 
   const [selectedSiteId, setSelectedSiteId] = useState("");
   const [viewport, setViewport] = useState("Desktop");
+  const [toast, setToast] = useState<string | null>(null);
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
 
   // Default to first site once data loads
   useEffect(() => {
@@ -35,7 +37,7 @@ export default function RegressionPage() {
 
   const handleApprove = () => {
     if (!site) return;
-    alert(`Visual baseline approved for ${site.name} on ${viewport}. New baseline is set.`);
+    showToast(`Baseline approved for ${site.name} · ${viewport}.`);
   };
 
   const handleFlag = () => {
@@ -43,12 +45,12 @@ export default function RegressionPage() {
     if (regressionIssues.length > 0) {
       router.push(`/issues/${regressionIssues[0].id}`);
     } else {
-      alert(`Creating visual regression ticket for ${site.name}…`);
+      showToast(`Visual regression ticket created for ${site.name}.`);
     }
   };
 
   const handleDefer = () => {
-    alert("Review deferred. This will be highlighted at the next team sync.");
+    showToast("Review deferred. Will surface at next team sync.");
   };
 
   if (sites.length === 0) {
@@ -221,6 +223,10 @@ export default function RegressionPage() {
           </div>
         </div>
       </div>
+
+      {toast && (
+        <div style={{ position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)", background: "var(--bg-card)", border: "1px solid var(--border-soft)", borderRadius: 10, padding: "10px 20px", fontSize: 13, fontWeight: 500, color: "var(--text-primary)", boxShadow: "0 4px 24px rgba(0,0,0,0.5)", zIndex: 9999, pointerEvents: "none" }}>{toast}</div>
+      )}
     </div>
   );
 }

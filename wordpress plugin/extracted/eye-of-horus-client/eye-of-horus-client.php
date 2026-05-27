@@ -106,12 +106,30 @@ if (!class_exists('Eye_Of_Horus_Client')) {
             ];
         }
 
+        /**
+         * Normalize the API URL so users can paste either the base domain or the full
+         * /api/wordpress path — both work.
+         */
+        private function normalize_api_url($raw_url) {
+            $url = esc_url_raw(trim($raw_url));
+            if (empty($url)) {
+                return '';
+            }
+            // Strip any trailing slash
+            $url = rtrim($url, '/');
+            // If it doesn't already end with /api/wordpress, append it
+            if (substr($url, -strlen('/api/wordpress')) !== '/api/wordpress') {
+                $url .= '/api/wordpress';
+            }
+            return $url;
+        }
+
         public function sanitize_settings($input) {
             $defaults = $this->default_settings();
             $out = $defaults;
 
             if (isset($input['api_url'])) {
-                $out['api_url'] = esc_url_raw(trim($input['api_url']));
+                $out['api_url'] = $this->normalize_api_url($input['api_url']);
             }
             if (isset($input['site_key'])) {
                 $out['site_key'] = sanitize_text_field(trim($input['site_key']));
@@ -186,8 +204,14 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                                     name="<?php echo esc_attr(self::OPTION_NAME); ?>[api_url]"
                                     value="<?php echo esc_attr($opts['api_url']); ?>"
                                     class="regular-text"
-                                    placeholder="https://your-dashboard.com/api/wordpress" />
-                                <p class="description"><?php esc_html_e('The Eye of Horus endpoint that receives this site\'s monitoring data.', 'eye-of-horus-client'); ?></p>
+                                    placeholder="https://eye-of-horus-2point0-alpha.vercel.app" />
+                                <p class="description">
+                                    <?php esc_html_e('Your Eye of Horus dashboard URL. You can paste the base URL — /api/wordpress is appended automatically when you save.', 'eye-of-horus-client'); ?>
+                                    <?php if (!empty($opts['api_url'])) : ?>
+                                        <br /><strong><?php esc_html_e('Current endpoint:', 'eye-of-horus-client'); ?></strong>
+                                        <code><?php echo esc_html($opts['api_url']); ?></code>
+                                    <?php endif; ?>
+                                </p>
                             </td>
                         </tr>
                         <tr>
@@ -595,7 +619,8 @@ if (!class_exists('Eye_Of_Horus_Client')) {
             }
 
             $data     = $this->get_site_data();
-            $response = wp_remote_post($opts['api_url'], [
+            $endpoint = $this->normalize_api_url($opts['api_url']);
+            $response = wp_remote_post($endpoint, [
                 'headers' => [
                     'Content-Type' => 'application/json; charset=utf-8',
                     'X-EOH-KEY'   => $opts['site_key'],
@@ -614,7 +639,9 @@ if (!class_exists('Eye_Of_Horus_Client')) {
             $body = wp_remote_retrieve_body($response);
 
             if ($code < 200 || $code >= 300) {
-                $msg = sprintf('Dashboard returned HTTP %d. %s', $code, wp_strip_all_tags($body));
+                $body_decoded = json_decode($body, true);
+                $detail = !empty($body_decoded['error']) ? $body_decoded['error'] : wp_strip_all_tags($body);
+                $msg = sprintf('Dashboard returned HTTP %d at %s. %s', $code, $endpoint, $detail);
                 $this->store_sync_result(false, $msg);
                 return new WP_Error('eoh_http_error', $msg);
             }
@@ -663,9 +690,9 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                 wp_send_json_error(['message' => __('Please save your API endpoint and site key first.', 'eye-of-horus-client')]);
             }
 
-            // Hit the GET endpoint which just returns a health check
-            $base_url = rtrim($opts['api_url'], '/');
-            $response = wp_remote_get($base_url, [
+            // GET the health-check endpoint (same URL — the route handles both GET and POST)
+            $endpoint = $this->normalize_api_url($opts['api_url']);
+            $response = wp_remote_get($endpoint, [
                 'headers' => ['X-EOH-KEY' => $opts['site_key']],
                 'timeout' => 10,
             ]);
@@ -675,10 +702,26 @@ if (!class_exists('Eye_Of_Horus_Client')) {
             }
 
             $code = (int) wp_remote_retrieve_response_code($response);
-            if ($code >= 200 && $code < 300) {
-                wp_send_json_success(['message' => sprintf(__('Connected successfully (HTTP %d).', 'eye-of-horus-client'), $code)]);
+            $body = wp_remote_retrieve_body($response);
+            $json = json_decode($body, true);
+
+            if ($code >= 200 && $code < 300 && !empty($json['ok'])) {
+                wp_send_json_success([
+                    'message' => sprintf(
+                        __('Connected to Eye of Horus successfully. Endpoint: %s', 'eye-of-horus-client'),
+                        $endpoint
+                    ),
+                ]);
             } else {
-                wp_send_json_error(['message' => sprintf(__('Connection failed (HTTP %d).', 'eye-of-horus-client'), $code)]);
+                $detail = !empty($json['error']) ? $json['error'] : wp_strip_all_tags($body);
+                wp_send_json_error([
+                    'message' => sprintf(
+                        __('Connection failed (HTTP %d). Endpoint tried: %s. Detail: %s', 'eye-of-horus-client'),
+                        $code,
+                        $endpoint,
+                        $detail
+                    ),
+                ]);
             }
         }
     }

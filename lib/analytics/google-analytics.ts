@@ -51,7 +51,7 @@ export async function fetchGAMetrics(
   try {
     // Primary metrics report
     const mainReport = await runReport(propertyId, token, {
-      dateRanges: [{ startDate, endDate }, { startDate: 'daysAgo28', endDate: 'daysAgo28' }],
+      dateRanges: [{ startDate, endDate }, { startDate: '28daysAgo', endDate: '1daysAgo' }],
       metrics: [
         { name: 'sessions' },
         { name: 'totalUsers' },
