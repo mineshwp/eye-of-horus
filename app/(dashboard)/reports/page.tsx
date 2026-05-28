@@ -21,6 +21,8 @@ interface GeneratedReport {
   executive_summary: string | null;
   share_token: string | null;
   created_at: string;
+  reviewed_at: string | null;
+  review_note: string | null;
 }
 
 export default function ReportsPage() {
@@ -150,6 +152,7 @@ export default function ReportsPage() {
           onGenerate={handleGenerateReport}
           error={generateError}
           onCopyLink={showToast}
+          onRefresh={fetchReports}
         />
       )}
 
@@ -162,101 +165,220 @@ export default function ReportsPage() {
 
 // ─── Generated Reports Tab ────────────────────────────────────────────────────
 
+const REPORT_STATUS_CONFIG: Record<string, { label: string; color: string; icon: string; iconColor: string }> = {
+  draft:            { label: "Draft",            color: "rgba(139,92,246,0.25)", icon: "file",    iconColor: "#C4B5FD" },
+  pending_approval: { label: "Pending approval", color: "rgba(245,158,11,0.25)", icon: "clock",   iconColor: "#FCD37A" },
+  approved:         { label: "Approved",         color: "rgba(34,197,94,0.25)",  icon: "check",   iconColor: "#86EFAC" },
+  rejected:         { label: "Rejected",         color: "rgba(239,68,68,0.25)",  icon: "x",       iconColor: "#FCA5A5" },
+  ready:            { label: "Ready",            color: "rgba(34,197,94,0.25)",  icon: "check",   iconColor: "#86EFAC" },
+  generating:       { label: "Generating",       color: "rgba(99,102,241,0.25)", icon: "clock",   iconColor: "#A5B4FC" },
+  error:            { label: "Error",            color: "rgba(239,68,68,0.25)",  icon: "x",       iconColor: "#FCA5A5" },
+};
+
 const GeneratedReports = ({
   reports,
   generating,
   onGenerate,
   error,
   onCopyLink,
+  onRefresh,
 }: {
   reports: GeneratedReport[];
   generating: boolean;
   onGenerate: () => void;
   error: string | null;
   onCopyLink: (message: string) => void;
-}) => (
-  <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-    <div className="card" style={{ padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-      <div>
-        <div style={{ fontWeight: 500, marginBottom: 4 }}>Generate a new report</div>
-        <div className="muted" style={{ fontSize: 12 }}>Compiles live data into a shareable client-facing monthly report.</div>
-        {error && <div style={{ color: "#EF4444", fontSize: 12, marginTop: 6 }}>Error: {error}</div>}
-      </div>
-      <button className="btn gold" onClick={onGenerate} disabled={generating} type="button">
-        <Icon name="sparkles" size={13} style={{ color: "var(--gold)" }} />
-        {generating ? "Generating…" : "Generate report"}
-      </button>
-    </div>
+  onRefresh: () => void;
+}) => {
+  const [approvalLoading, setApprovalLoading] = useState<string | null>(null);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
 
-    {reports.length === 0 ? (
-      <div className="card card-pad" style={{ textAlign: "center", padding: 48 }}>
-        <div className="muted">No reports generated yet. Click &ldquo;Generate report&rdquo; above to create your first.</div>
-      </div>
-    ) : (
-      <div className="card">
-        <div className="card-head">
-          <h3><Icon name="file" size={14} /> Generated reports</h3>
-          <span className="h-sub">{reports.length} reports</span>
-        </div>
+  const handleApproval = async (reportId: string, action: "submit" | "approve" | "reject") => {
+    setApprovalLoading(reportId + action);
+    setApprovalError(null);
+    try {
+      const res = await apiFetch("/api/reports/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reportId, action }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        onRefresh();
+      } else {
+        setApprovalError(data.error || "Action failed");
+      }
+    } catch {
+      setApprovalError("Network error");
+    } finally {
+      setApprovalLoading(null);
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <div className="card" style={{ padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div>
-          {reports.map((r) => (
-            <div key={r.id} className="feed-item">
-              <div
-                className="feed-icon"
-                style={{
-                  borderColor: r.status === "ready" ? "rgba(34,197,94,0.3)" : "rgba(245,158,11,0.3)",
-                  color: r.status === "ready" ? "#86EFAC" : "#FCD37A",
-                }}
-              >
-                <Icon name={r.status === "ready" ? "check" : "clock"} size={12} />
-              </div>
-              <div className="feed-body">
-                <div className="feed-title">{r.title || `${r.report_type} report`}</div>
-                <div className="feed-meta">
-                  <span className="mono">{new Date(r.created_at).toLocaleString("en-ZA")}</span>
-                  {r.executive_summary && (
-                    <>
-                      <span className="pip" />
-                      <span style={{ maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "inline-block" }}>
-                        {r.executive_summary.slice(0, 80)}…
-                      </span>
-                    </>
-                  )}
-                </div>
-              </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                {r.share_token && (
-                  <a
-                    href={`/report/${r.share_token}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="btn"
-                    style={{ fontSize: 12, textDecoration: "none" }}
-                  >
-                    <Icon name="eye" size={11} /> View
-                  </a>
-                )}
-                {r.share_token && (
-                  <button
-                    className="btn ghost"
-                    style={{ fontSize: 12 }}
-                    type="button"
-                    onClick={() => {
-                      const url = `${window.location.origin}/report/${r.share_token}`;
-                      navigator.clipboard.writeText(url).then(() => onCopyLink("Share link copied to clipboard."));
-                    }}
-                  >
-                    Copy link
-                  </button>
-                )}
-              </div>
-            </div>
-          ))}
+          <div style={{ fontWeight: 500, marginBottom: 4 }}>Generate a new report</div>
+          <div className="muted" style={{ fontSize: 12 }}>Compiles live data into a client-facing monthly report. New reports start as a Draft for review before client access.</div>
+          {error && <div style={{ color: "#EF4444", fontSize: 12, marginTop: 6 }}>Error: {error}</div>}
+          {approvalError && <div style={{ color: "#EF4444", fontSize: 12, marginTop: 6 }}>Approval error: {approvalError}</div>}
         </div>
+        <button className="btn gold" onClick={onGenerate} disabled={generating} type="button">
+          <Icon name="sparkles" size={13} style={{ color: "var(--gold)" }} />
+          {generating ? "Generating…" : "Generate report"}
+        </button>
       </div>
-    )}
-  </div>
-);
+
+      {/* Approval workflow legend */}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        {["Draft", "Pending approval", "Approved"].map((step, i) => (
+          <div key={step} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <div style={{
+              padding: "3px 10px",
+              borderRadius: 20,
+              fontSize: 11,
+              fontWeight: 500,
+              background: ["rgba(139,92,246,0.15)", "rgba(245,158,11,0.15)", "rgba(34,197,94,0.15)"][i],
+              color: ["#C4B5FD", "#FCD37A", "#86EFAC"][i],
+              border: `1px solid ${["rgba(139,92,246,0.3)", "rgba(245,158,11,0.3)", "rgba(34,197,94,0.3)"][i]}`,
+            }}>{step}</div>
+            {i < 2 && <span style={{ color: "var(--text-dim)", fontSize: 12 }}>→</span>}
+          </div>
+        ))}
+        <span className="muted" style={{ fontSize: 11, marginLeft: 4 }}>Only approved reports are visible to clients.</span>
+      </div>
+
+      {reports.length === 0 ? (
+        <div className="card card-pad" style={{ textAlign: "center", padding: 48 }}>
+          <div className="muted">No reports generated yet. Click &ldquo;Generate report&rdquo; above to create your first.</div>
+        </div>
+      ) : (
+        <div className="card">
+          <div className="card-head">
+            <h3><Icon name="file" size={14} /> Generated reports</h3>
+            <span className="h-sub">{reports.length} report{reports.length !== 1 ? "s" : ""}</span>
+          </div>
+          <div>
+            {reports.map((r) => {
+              const cfg = REPORT_STATUS_CONFIG[r.status] ?? REPORT_STATUS_CONFIG.draft;
+              const isLoading = (action: string) => approvalLoading === r.id + action;
+              return (
+                <div key={r.id} className="feed-item" style={{ alignItems: "flex-start", paddingTop: 14, paddingBottom: 14 }}>
+                  <div
+                    className="feed-icon"
+                    style={{ borderColor: cfg.color, color: cfg.iconColor, marginTop: 2 }}
+                  >
+                    <Icon name={cfg.icon} size={12} />
+                  </div>
+                  <div className="feed-body" style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                      <span className="feed-title" style={{ marginBottom: 0 }}>{r.title || `${r.report_type} report`}</span>
+                      <span style={{
+                        padding: "2px 8px",
+                        borderRadius: 20,
+                        fontSize: 10,
+                        fontWeight: 600,
+                        letterSpacing: "0.03em",
+                        textTransform: "uppercase",
+                        background: cfg.color,
+                        color: cfg.iconColor,
+                      }}>{cfg.label}</span>
+                    </div>
+                    <div className="feed-meta">
+                      <span className="mono">{new Date(r.created_at).toLocaleString("en-ZA")}</span>
+                      {r.reviewed_at && (
+                        <>
+                          <span className="pip" />
+                          <span>Reviewed {new Date(r.reviewed_at).toLocaleDateString("en-ZA")}</span>
+                        </>
+                      )}
+                      {r.executive_summary && (
+                        <>
+                          <span className="pip" />
+                          <span style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "inline-block" }}>
+                            {r.executive_summary.slice(0, 80)}…
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Action buttons based on status */}
+                  <div style={{ display: "flex", gap: 6, flexShrink: 0, alignItems: "center" }}>
+                    {r.share_token && (
+                      <a
+                        href={`/report/${r.share_token}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="btn ghost"
+                        style={{ fontSize: 11, textDecoration: "none", padding: "4px 10px" }}
+                      >
+                        <Icon name="eye" size={11} /> Preview
+                      </a>
+                    )}
+
+                    {(r.status === "draft" || r.status === "ready") && (
+                      <button
+                        className="btn"
+                        style={{ fontSize: 11, padding: "4px 10px" }}
+                        type="button"
+                        disabled={isLoading("submit")}
+                        onClick={() => handleApproval(r.id, "submit")}
+                      >
+                        <Icon name="check" size={11} />
+                        {isLoading("submit") ? "Submitting…" : "Submit for approval"}
+                      </button>
+                    )}
+
+                    {r.status === "pending_approval" && (
+                      <>
+                        <button
+                          className="btn primary"
+                          style={{ fontSize: 11, padding: "4px 10px" }}
+                          type="button"
+                          disabled={isLoading("approve")}
+                          onClick={() => handleApproval(r.id, "approve")}
+                        >
+                          <Icon name="check" size={11} />
+                          {isLoading("approve") ? "Approving…" : "Approve"}
+                        </button>
+                        <button
+                          className="btn ghost"
+                          style={{ fontSize: 11, padding: "4px 10px", color: "#FCA5A5" }}
+                          type="button"
+                          disabled={isLoading("reject")}
+                          onClick={() => handleApproval(r.id, "reject")}
+                        >
+                          <Icon name="x" size={11} />
+                          {isLoading("reject") ? "Rejecting…" : "Reject"}
+                        </button>
+                      </>
+                    )}
+
+                    {r.status === "approved" && r.share_token && (
+                      <button
+                        className="btn ghost"
+                        style={{ fontSize: 11, padding: "4px 10px" }}
+                        type="button"
+                        onClick={() => {
+                          const url = `${window.location.origin}/report/${r.share_token}`;
+                          navigator.clipboard.writeText(url).then(() => onCopyLink("Share link copied to clipboard."));
+                        }}
+                      >
+                        Copy link
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
 
 // ─── Weekly Summary Tab ───────────────────────────────────────────────────────
 

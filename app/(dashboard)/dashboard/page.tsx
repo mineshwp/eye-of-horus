@@ -290,7 +290,9 @@ export default function Dashboard() {
             <h3>
               <Icon name="issue" size={14} /> {filter === "All" ? "All open issues" : `${filter} issues`}
             </h3>
-            <span className="h-sub">{filteredIssues.length} shown</span>
+            <button className="btn ghost sm" onClick={() => router.push("/issues")} type="button">
+              View all <Icon name="chevron" size={12} />
+            </button>
           </div>
           <div style={{ flex: 1, overflowY: "auto" }}>
             {filteredIssues.length > 0 ? (

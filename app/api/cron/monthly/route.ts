@@ -127,7 +127,7 @@ export async function POST(request: NextRequest) {
               report_type: "monthly",
               period_start: periodStart.toISOString().split("T")[0],
               period_end: periodEnd.toISOString().split("T")[0],
-              status: "ready",
+              status: "draft",
               content,
               executive_summary: execSummary,
               share_token: shareToken,

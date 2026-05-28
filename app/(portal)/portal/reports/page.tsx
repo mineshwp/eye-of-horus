@@ -119,13 +119,13 @@ export default function ClientReportsPage() {
 
       const clientIds = (assignments as ClientUser[]).map((a) => a.client_id);
 
-      // 4. Fetch reports for all assigned clients (monthly, ready only)
+      // 4. Fetch reports for all assigned clients (monthly, approved only — RLS also enforces this)
       const { data: reportData, error: reportErr } = await supabase
         .from("reports")
         .select("id, client_id, site_id, title, report_type, period_start, period_end, status, share_token, created_at")
         .in("client_id", clientIds)
         .eq("report_type", "monthly")
-        .eq("status", "ready")
+        .eq("status", "approved")
         .order("created_at", { ascending: false })
         .limit(12);
 
@@ -396,7 +396,7 @@ export default function ClientReportsPage() {
                   >
                     <span className="badge ok">
                       <span className="dot" />
-                      Ready
+                      Approved
                     </span>
                     <a
                       href={`/report/${report.share_token}`}

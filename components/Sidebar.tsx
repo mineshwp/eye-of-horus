@@ -80,19 +80,7 @@ export default function Sidebar() {
           count={criticalCount}
           critical
           active={pathname.startsWith("/issues")}
-          onClick={() => {
-            if (issues.length === 0) {
-              navigateTo("/dashboard");
-            } else {
-              navigateTo(`/issues/${issues[0].id}`);
-            }
-          }}
-        />
-        <NavItem
-          icon="diff"
-          label="Visual changes"
-          active={pathname === "/regression"}
-          onClick={() => navigateTo("/regression")}
+          onClick={() => navigateTo("/issues")}
         />
         <NavItem
           icon="wp"

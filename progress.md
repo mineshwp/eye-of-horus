@@ -1,6 +1,155 @@
 # Eye of Horus — Progress Log
 
 ## Latest Update
+**2026-05-28 — Wordfence firewall data integrated into plugin, security tab, and reports.**
+
+### What was done this session
+
+#### WordPress plugin v2.3.0
+- Added `wordfence` module toggle (enabled by default).
+- Added `collect_wordfence_data()` private method — checks for Wordfence table existence, then queries:
+  - `wfConfig` table for WAF enabled, learning mode, premium rules, IP blocklist, brute force protection, last scan time.
+  - `wfHits` table for attack summary (Complex / Brute Force / Blocklist) for today / week / month, top 10 blocked IPs with country (last 7 days), top 10 attacking countries (last 7 days).
+  - `wfLogins` table for last 20 failed and 10 successful login attempts.
+  - `wfIssues` table for open scan issues (count, severity, description, malware detection).
+- Returns `null` gracefully when Wordfence is not installed.
+- IPs stored as `varbinary(16)` converted via `INET6_NTOA()` with `::ffff:` prefix stripped for IPv4.
+
+#### Security Tab — `app/(dashboard)/sites/[id]/page.tsx`
+- Extended `WpSnapshot` interface with full `wordfence_data` type.
+- Rebuilt `SecurityTab`: existing SSL/domain/debug/admin KPI cards retained; Wordfence section appears below when data is present.
+- Wordfence section shows: 4 status KPI cards (WAF, Firewall Rules, IP Blocklist, Brute Force), Firewall Summary table (Today/Week/Month × Complex/Brute Force/Blocklist/Total), Wordfence scan issues feed, Top Blocked IPs table, Top Countries table, Login Attempts (Failed/Successful tabbed view).
+
+#### Reports — `lib/reports/types.ts`, `lib/reports/compiler.ts`, `app/report/[token]/page.tsx`
+- Added `ReportSecurityAttackPeriod` and `ReportSecurity` interfaces; added `security?: ReportSecurity` to `ReportContent`.
+- Compiler extracts `wordfence_data` from wp snapshot, builds `reportSecurity` block; adds recommendations for malware found, WAF disabled, or high scan issue count.
+- Public report view renders a "Security (Wordfence)" section when `content.security` is present: status badges, attack summary table, scan issues alert, top countries, last scan time.
+
+### Verification
+- `npx tsc --noEmit` — 0 errors.
+
+### Deployment notes
+- Install updated plugin (v2.3.0) on client WordPress sites — the new Wordfence endpoints require the reinstalled plugin.
+- Wordfence must be installed and active on the WordPress site; the module returns `null` gracefully when absent.
+- On first sync after plugin update, Wordfence data will appear in the Security tab automatically.
+
+---
+
+**2026-05-28 — WPForms submission data pulled from DB and wired into dashboard + reports.**
+
+### What was done this session
+
+#### WordPress plugin v2.2.0
+- Added `get_wpforms_entry_counts()` private method: checks whether the `{prefix}wpforms_entries` table exists (WPForms Pro only), then queries per-form submission counts — total all-time, this month, last month — excluding spam/trash entries.
+- Updated WPForms section in `collect_form_data()`: each form now carries `submissions` (total), `submissions_month`, `submissions_prev_month`, and `has_entries_table`. Returns `null` for all three counts on WPForms Lite (no entries table).
+- Also handles new forms with zero entries gracefully (returns 0s, not null).
+
+#### FormsTab UI — `app/(dashboard)/sites/[id]/page.tsx`
+- Extended `form_data` type to include `id`, `submissions_month`, `submissions_prev_month`, `has_entries_table`.
+- Split forms into `wpformForms` and `otherForms`.
+- 4th KPI card now shows "Submissions this month" (with ▲/▼ vs last month) when WPForms data is available; falls back to "Detected" count otherwise.
+- New WPForms table: per-form columns — Total / This month / Last month / Trend — with a totals footer row.
+- Graceful fallback for WPForms Lite (no entries table).
+- Other form plugins (CF7, Gravity, Ninja, Elementor) still shown in a separate feed-item list.
+
+#### Reports — `lib/reports/types.ts`, `lib/reports/compiler.ts`, `app/report/[token]/page.tsx`
+- Added `WPFormStat` interface and extended `ReportForms` with `wpforms?`, `totalSubmissionsThisMonth?`, `totalSubmissionsLastMonth?`.
+- Compiler now selects `form_data` from the latest WP snapshot, builds `wpformStats`, and spreads them into the `forms` block.
+- Added recommendation when form submissions drop >30% month-over-month.
+- Public report view now renders a "Form Submissions" section with per-form table and totals row whenever `content.forms.wpforms` is present.
+
+### Verification
+- `npx tsc --noEmit` — 0 errors.
+
+### Deployment notes
+- Install the updated plugin (v2.2.0) on client WordPress sites — the new `get_wpforms_entry_counts()` method requires the reinstalled plugin.
+- WPForms Pro clients: submission data will appear after the next plugin sync.
+- WPForms Lite clients: forms are still listed but submission counts show as null/empty (no entries table).
+
+---
+
+**2026-05-28 — WordPress plugin update button wired to real API.**
+
+### What was done this session
+
+#### Uptime staleness — root cause identified
+- The `*/15 * * * *` Vercel Cron schedule **requires Vercel Pro**. On the Hobby plan crons are capped at once per day, so the 05:45 check is today's single run. No code change needed — the route and schedule are correct. To get true 15-minute checks: upgrade to Vercel Pro, or use an external ping service (cron-job.org, GitHub Actions) to call `POST /api/cron/uptime` with the `CRON_SECRET` bearer token every 15 minutes.
+
+#### WordPress plugin update — real API
+- **`app/api/wordpress/update/route.ts`** (new):
+  - `POST { siteId, pluginName }` — looks up site `url` + `api_key`, finds plugin file path from latest `wordpress_snapshots`, calls `POST {siteUrl}/wp-json/eye-of-horus/v1/update-plugin`.
+  - On success: removes row from `wp_updates`, resolves the matching `issues` row, updates `sites.open_issues`, logs activity.
+  - Returns 502 with detail if WordPress site is unreachable or returns an error.
+- **WordPress plugin** (`eye-of-horus-client.php` v2.1.0):
+  - Added `rest_api_init` hook → `register_rest_routes()`.
+  - New `POST /wp-json/eye-of-horus/v1/update-plugin` endpoint: validates `X-EOH-KEY` header, sanitises `plugin_file` param (path traversal guard), loads WP Plugin Upgrader with `Automatic_Upgrader_Skin`, calls `$upgrader->upgrade($plugin_file)`.
+- **`app/(dashboard)/wp/page.tsx`**:
+  - Imported `apiFetch`.
+  - `handleUpdate` is now `async` and calls `POST /api/wordpress/update`. Shows "Updating…" label while in flight; disables all Update buttons during the request.
+- **`app/(dashboard)/sites/[id]/page.tsx`** — WordPress tab plugin list:
+  - Added `updatingPlugin` + `updateToast` state to `WordPressTab`.
+  - Each plugin row with `update_available` now shows an **Update** button alongside the version badge.
+  - Button calls `handlePluginUpdate(p.name)` which POSTs to `/api/wordpress/update`.
+  - Inline success/error banner appears below the card header.
+
+### Verification
+- `npm run build` passes cleanly across 43 routes, 0 TypeScript errors.
+
+### Notes
+- The update endpoint on the WordPress side requires the updated plugin (v2.1.0) to be installed on the client's WordPress site — the new REST route (`/wp-json/eye-of-horus/v1/update-plugin`) doesn't exist on older installs. Reinstall the plugin on SADV.
+- For uptime: if upgrading Vercel to Pro, the 15-minute cron will work automatically. Until then, once-daily is the effective rate.
+
+---
+
+**2026-05-28 — Issues list page, report approval workflow, and sidebar fix.**
+
+### What was done this session
+
+#### Issues list page — `app/(dashboard)/issues/page.tsx` (new)
+- Created a dedicated `/issues` route showing all issues across all sites in a sortable, filterable table.
+- Filters: severity chips (All / Critical / High / Medium / Low), status dropdown, category dropdown, text search.
+- Sort by severity (default) or detected date (click column header).
+- Each row shows: severity chip, issue title + page URL, category, site badge, status badge, detected date, chevron to detail.
+- Empty states for both no-data and no-filter-match cases.
+- Footer row shows filtered count vs. total.
+
+#### Sidebar — `components/Sidebar.tsx`
+- Fixed "Issues" nav item: now navigates to `/issues` (list page) instead of jumping to the first issue's detail.
+- Dashboard issues panel: added "View all" button linking to `/issues`.
+
+#### Report approval workflow
+- **DB migration** — `supabase/migrations/20260528200000_report_approval_workflow.sql`:
+  - Extended `reports.status` CHECK constraint to include `draft`, `pending_approval`, `approved`, `rejected` (while keeping `generating`, `ready`, `error`).
+  - Migrates existing `ready` rows to `draft` so they go through the approval flow.
+  - Added `reviewed_by`, `reviewed_at`, `review_note` columns for audit trail.
+  - Updated RLS so client-role users only see `approved` reports; admins/super_admins see all.
+- **`app/api/reports/approve/route.ts`** (new) — `POST { reportId, action, note? }`:
+  - `submit` — draft → pending_approval
+  - `approve` — pending_approval → approved
+  - `reject` — pending_approval → draft (back for editing)
+  - Validates valid status transitions; writes `reviewed_by` / `reviewed_at` on approve/reject.
+- **`app/(dashboard)/reports/page.tsx`** — Updated `GeneratedReports` component:
+  - Shows status badge per report (Draft / Pending approval / Approved / Rejected).
+  - "Submit for approval" button for draft reports.
+  - "Approve" and "Reject" buttons for pending_approval reports.
+  - "Copy link" only available for approved reports.
+  - Approval workflow legend (Draft → Pending approval → Approved) with note: clients only see approved reports.
+- **`app/api/reports/generate/route.ts`** — New reports now set to `draft` (not `ready`) after compilation.
+- **`app/api/cron/monthly/route.ts`** — Auto-generated monthly reports also set to `draft` for admin review.
+- **`app/(portal)/portal/reports/page.tsx`** — Client portal now filters on `status = 'approved'` instead of `status = 'ready'`. Badge updated from "Ready" to "Approved".
+
+### Verification
+- `npm run build` passes cleanly across 42 routes (up from 40).
+- TypeScript: 0 errors.
+- New routes confirmed in build: `/issues`, `/api/reports/approve`.
+
+### Pending
+- **Run in Supabase SQL Editor:** `supabase/migrations/20260528200000_report_approval_workflow.sql`
+  (This extends the status constraint, migrates ready→draft, adds reviewed_by/at columns, and updates RLS.)
+- Existing env vars and API keys from previous sessions still apply.
+
+---
+
 **2026-05-28 — Cron schedule split, Clarity endpoint support, and sync visibility.**
 
 ### What was done this session
@@ -597,10 +746,8 @@ Future Phase migrations will add:
 
 ## Known Issues / Blockers
 
-- **First super_admin user not yet created.** After signing up via the login page, go to Supabase Dashboard → Table Editor → `profiles` → set `role = 'super_admin'` for your user row.
 - **No third-party API keys set yet.** AI, email, and analytics features return graceful fallbacks until keys are added (see Next Recommended Task below).
-- **Domain expiry UI panel not built.** The `domain_checks` table is populated by the check runner but no UI card exists yet on the Site Detail page to display days remaining / registrar / expiry date.
-- **Playwright form submission testing not implemented.** The runner detects forms on pages but does not yet fill and submit test data.
+- **Report approval migration not yet run.** `supabase/migrations/20260528200000_report_approval_workflow.sql` must be applied in Supabase SQL Editor to activate the approval workflow and update RLS policies.
 
 ---
 

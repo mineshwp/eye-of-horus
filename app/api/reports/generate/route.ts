@@ -78,11 +78,11 @@ export async function POST(request: NextRequest) {
         : 'All WordPress plugins are up to date.',
     ].filter(Boolean).join(' ');
 
-    // Update report with compiled content
+    // Update report with compiled content — status goes to 'draft' for admin review before client access
     const { error: updateErr } = await supabase
       .from('reports')
       .update({
-        status: 'ready',
+        status: 'draft',
         content,
         executive_summary: execSummary,
         updated_at: new Date().toISOString(),

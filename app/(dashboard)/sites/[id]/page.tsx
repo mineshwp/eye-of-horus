@@ -39,7 +39,46 @@ interface WpSnapshot {
   plugin_data: { file: string; name: string; version: string; active: boolean; update_available: boolean; new_version: string | null }[] | null;
   update_data: { core_update: boolean; core_version: string | null; plugin_updates: number; theme_updates: number } | null;
   security_data: { debug_mode: boolean; admin_users: number; security_plugin: string | null; error_log_lines: string[] } | null;
-  form_data: { plugin: string; name?: string; active: boolean; submissions?: number | null }[] | null;
+  wordfence_data: {
+    active: boolean;
+    waf_enabled: boolean;
+    waf_learning_mode: boolean;
+    waf_rules_premium: boolean;
+    ip_blocklist_enabled: boolean;
+    brute_force_enabled: boolean;
+    attacks_today: { complex: number; brute_force: number; blocklist: number; total: number };
+    attacks_week:  { complex: number; brute_force: number; blocklist: number; total: number };
+    attacks_month: { complex: number; brute_force: number; blocklist: number; total: number };
+    top_blocked_ips: { ip: string; country: string; count: number }[];
+    top_countries: { country: string; count: number }[];
+    login_failed:  { username: string; ip: string; time: string }[];
+    login_success: { username: string; ip: string; time: string }[];
+    scan_issues_count: number;
+    scan_issues: { type: string; severity: string; description: string }[];
+    malware_found: boolean;
+    last_scan_time: string | null;
+  } | null;
+  form_data: {
+    plugin: string;
+    name?: string;
+    id?: number;
+    active: boolean;
+    has_entries_table?: boolean;
+    // Submission counts
+    completed_total?: number | null;
+    abandoned_total?: number | null;
+    completed_month?: number | null;
+    abandoned_month?: number | null;
+    completed_last?: number | null;
+    abandoned_last?: number | null;
+    // Backward-compat aliases
+    submissions?: number | null;
+    submissions_month?: number | null;
+    submissions_prev_month?: number | null;
+    // Field-level analytics
+    field_breakdowns?: { field: string; values: { value: string; count: number }[] }[];
+    abandonment_reasons?: { field: string; count: number }[];
+  }[] | null;
   server_data: { db_size_mb: number | null; cron_enabled: boolean; site_health_ok: boolean | null; language: string; timezone: string } | null;
   created_at: string;
 }
@@ -94,6 +133,30 @@ export default function SiteDetailPage({ params }: PageProps) {
   const site = sites.find((s) => s.id === siteId) || sites[0];
   const siteIssues = issues.filter((i) => i.siteId === site?.id);
   const siteUpdates = wpUpdates.filter((u) => u.siteId === site?.id);
+
+  // Derive synthetic issues from wp_updates that have no matching issue yet
+  const existingWpTitles = new Set(
+    siteIssues.filter((i) => i.category === "WordPress update").map((i) => i.title)
+  );
+  const syntheticWpIssues: Issue[] = siteUpdates
+    .filter((u) => !existingWpTitles.has(`${u.target} update available`))
+    .map((u) => ({
+      id: `wp-update-${u.id}`,
+      siteId: u.siteId,
+      title: `${u.target} update available`,
+      severity: (u.risk === "high" ? "high" : "medium") as Issue["severity"],
+      impact: `${u.target} is running v${u.from}. Update v${u.to} is available.`,
+      category: "WordPress update",
+      page: "wp-admin/plugins.php",
+      recommended: u.notes,
+      owner: "Unassigned",
+      status: "Open",
+      detected: "Now",
+      changeType: "WordPress plugin sync",
+      confidence: 95,
+      evidence: { from: u.from, to: u.to, flag: u.flag },
+    }));
+  const combinedSiteIssues = [...siteIssues, ...syntheticWpIssues];
 
   // Real uptime history from Supabase
   const [uptimeHistory, setUptimeHistory] = useState<UptimeCheckRow[]>([]);
@@ -440,7 +503,7 @@ export default function SiteDetailPage({ params }: PageProps) {
       </div>
 
       <Tabs
-        tabs={["Overview", "Issues", "Analytics", "SEO", "Marketing", "WordPress", "Performance", "Security", "Forms", "History", "Integrations"]}
+        tabs={["Overview", "Issues", "Analytics", "SEO", "Marketing", "WordPress", "Performance", "Security", "Forms", "History", "Visual changes", "Integrations"]}
         active={tab}
         onChange={setTab}
       />
@@ -797,7 +860,7 @@ export default function SiteDetailPage({ params }: PageProps) {
         )}
 
         {tab === "Issues" && (
-          <IssuesTab site={site} issues={siteIssues} router={router} />
+          <IssuesTab site={site} issues={combinedSiteIssues} router={router} onNavigateToWp={() => setTab("WordPress")} />
         )}
         {tab === "Analytics" && <AnalyticsTab site={site} snapshot={analyticsSnapshot} onRefresh={refreshAnalytics} refreshing={analyticsRefreshing} />}
         {tab === "SEO" && <SeoTab site={site} snapshot={analyticsSnapshot} onRefresh={refreshAnalytics} refreshing={analyticsRefreshing} />}
@@ -834,6 +897,10 @@ export default function SiteDetailPage({ params }: PageProps) {
 
         {tab === "History" && (
           <HistoryTab site={site} />
+        )}
+
+        {tab === "Visual changes" && (
+          <VisualChangesTab site={site} issues={siteIssues} />
         )}
 
         {tab === "Integrations" && (
@@ -1368,9 +1435,10 @@ interface IssuesTabProps {
   site: Site;
   issues: Issue[];
   router: any;
+  onNavigateToWp: () => void;
 }
 
-const IssuesTab = ({ site, issues, router }: IssuesTabProps) => {
+const IssuesTab = ({ site, issues, router, onNavigateToWp }: IssuesTabProps) => {
   const [sev, setSev] = useState("All");
   const [expanded, setExpanded] = useState<string | null>(issues[0]?.id || null);
   const [groupByCategory, setGroupByCategory] = useState(false);
@@ -1394,7 +1462,7 @@ const IssuesTab = ({ site, issues, router }: IssuesTabProps) => {
           All clear on {site.name}
         </div>
         <div className="muted">
-          No open issues. Horus has scanned 18 pages across 3 viewports without flagging anything.
+          No open issues detected. Run a scan to check for new problems.
         </div>
       </div>
     );
@@ -1454,14 +1522,14 @@ const IssuesTab = ({ site, issues, router }: IssuesTabProps) => {
           <div key={cat} style={{ display: "flex", flexDirection: "column", gap: 14, marginBottom: 8 }}>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)", paddingLeft: 2 }}>{cat}</div>
             {catIssues.map((issue) => (
-              <IssueAiCard key={issue.id} issue={issue} site={site} expanded={expanded === issue.id} onToggle={() => setExpanded(expanded === issue.id ? null : issue.id)} onOpen={() => router.push(`/issues/${issue.id}`)} />
+              <IssueAiCard key={issue.id} issue={issue} site={site} expanded={expanded === issue.id} onToggle={() => setExpanded(expanded === issue.id ? null : issue.id)} onOpen={() => issue.id.startsWith("wp-update-") ? onNavigateToWp() : router.push(`/issues/${issue.id}`)} />
             ))}
           </div>
         ))
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {filtered.map((issue) => (
-            <IssueAiCard key={issue.id} issue={issue} site={site} expanded={expanded === issue.id} onToggle={() => setExpanded(expanded === issue.id ? null : issue.id)} onOpen={() => router.push(`/issues/${issue.id}`)} />
+            <IssueAiCard key={issue.id} issue={issue} site={site} expanded={expanded === issue.id} onToggle={() => setExpanded(expanded === issue.id ? null : issue.id)} onOpen={() => issue.id.startsWith("wp-update-") ? onNavigateToWp() : router.push(`/issues/${issue.id}`)} />
           ))}
         </div>
       )}
@@ -2760,6 +2828,9 @@ interface WordPressTabProps {
 }
 
 const WordPressTab = ({ site, snapshot, keyMasked, keyGenerating, newKey, onGenerateKey, updates }: WordPressTabProps) => {
+  const [updatingPlugin, setUpdatingPlugin] = useState<string | null>(null);
+  const [updateToast, setUpdateToast] = useState<{ msg: string; ok: boolean } | null>(null);
+
   const theme = snapshot?.theme_data;
   const plugins = (snapshot?.plugin_data ?? []).filter((p) => p.active);
   const allPlugins = snapshot?.plugin_data ?? [];
@@ -2768,6 +2839,28 @@ const WordPressTab = ({ site, snapshot, keyMasked, keyGenerating, newKey, onGene
   const security = snapshot?.security_data;
   const forms = snapshot?.form_data ?? [];
   const server = snapshot?.server_data;
+
+  const handlePluginUpdate = async (pluginName: string) => {
+    if (updatingPlugin) return;
+    setUpdatingPlugin(pluginName);
+    setUpdateToast(null);
+    try {
+      const res = await apiFetch("/api/wordpress/update", {
+        method: "POST",
+        body: JSON.stringify({ siteId: site.id, pluginName }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setUpdateToast({ msg: `${pluginName} updated successfully.`, ok: true });
+      } else {
+        setUpdateToast({ msg: data.error ?? "Update failed.", ok: false });
+      }
+    } catch {
+      setUpdateToast({ msg: "Update failed: could not reach the server.", ok: false });
+    } finally {
+      setUpdatingPlugin(null);
+    }
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -2931,6 +3024,11 @@ const WordPressTab = ({ site, snapshot, keyMasked, keyGenerating, newKey, onGene
                 {plugins.length} active · <span style={{ color: pluginsWithUpdates.length > 0 ? "var(--amber)" : "var(--green)" }}>{pluginsWithUpdates.length} updates pending</span>
               </span>
             </div>
+            {updateToast && (
+              <div style={{ padding: "8px 18px", fontSize: 12, color: updateToast.ok ? "var(--green)" : "var(--red)", borderBottom: "1px solid var(--border-soft)", background: updateToast.ok ? "rgba(34,197,94,0.06)" : "rgba(239,68,68,0.06)" }}>
+                {updateToast.msg}
+              </div>
+            )}
             <div>
               {allPlugins.length === 0 && (
                 <div className="empty">No plugin data from the last sync.</div>
@@ -2948,7 +3046,18 @@ const WordPressTab = ({ site, snapshot, keyMasked, keyGenerating, newKey, onGene
                     </div>
                   </div>
                   {p.update_available && (
-                    <Badge tone="high">→ {p.new_version}</Badge>
+                    <>
+                      <Badge tone="high">→ {p.new_version}</Badge>
+                      <button
+                        className="btn sm"
+                        style={{ marginLeft: 8 }}
+                        disabled={updatingPlugin !== null}
+                        onClick={() => handlePluginUpdate(p.name)}
+                        type="button"
+                      >
+                        {updatingPlugin === p.name ? "Updating…" : "Update"}
+                      </button>
+                    </>
                   )}
                 </div>
               ))}
@@ -4080,6 +4189,7 @@ const SecurityTab = ({
   issues: Issue[];
   wpSnapshot: WpSnapshot | null;
 }) => {
+  const [loginTab, setLoginTab] = useState<"failed" | "success">("failed");
   const secIssues = issues.filter((i) => i.category === "security");
 
   const sslDays = latestCheck?.ssl_days_remaining;
@@ -4095,10 +4205,21 @@ const SecurityTab = ({
   };
 
   const secData = wpSnapshot?.security_data;
+  const wf = wpSnapshot?.wordfence_data;
+
+  const fmtTime = (iso: string) => {
+    try { return new Date(iso).toLocaleString(); } catch { return iso; }
+  };
+
+  const attackRows = wf ? [
+    { label: "Today",     d: wf.attacks_today },
+    { label: "Week",      d: wf.attacks_week  },
+    { label: "Month",     d: wf.attacks_month },
+  ] : [];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      {/* SSL + domain status cards */}
+      {/* SSL + domain + WordPress KPI cards */}
       <div className="grid-4">
         <div className="card kpi-card">
           <div className="kpi-head"><Icon name="shield" size={13} /> SSL certificate</div>
@@ -4138,6 +4259,200 @@ const SecurityTab = ({
         </div>
       </div>
 
+      {/* Wordfence section */}
+      {wf && (
+        <>
+          {/* Wordfence status KPI cards */}
+          <div className="card-head" style={{ padding: "4px 0 0" }}>
+            <h3 style={{ fontSize: 13, color: "var(--text-primary)" }}><Icon name="shield" size={13} /> Wordfence Firewall</h3>
+            {wf.last_scan_time && <span className="dim" style={{ fontSize: 11.5 }}>Last scan: {fmtTime(wf.last_scan_time)}</span>}
+          </div>
+          <div className="grid-4">
+            <div className="card kpi-card">
+              <div className="kpi-head">Web Application Firewall</div>
+              <div className="kpi-value" style={{ color: wf.waf_enabled ? "var(--green)" : "var(--red)", fontSize: 16 }}>
+                {wf.waf_enabled ? (wf.waf_learning_mode ? "Learning Mode" : "Enabled") : "Disabled"}
+              </div>
+              <div className="kpi-foot dim">{wf.waf_enabled ? "Stops complex attacks" : "WAF protection disabled"}</div>
+            </div>
+            <div className="card kpi-card">
+              <div className="kpi-head">Firewall Rules</div>
+              <div className="kpi-value" style={{ color: wf.waf_rules_premium ? "var(--teal)" : "var(--amber)", fontSize: 16 }}>
+                {wf.waf_rules_premium ? "Premium" : "Free"}
+              </div>
+              <div className="kpi-foot dim">{wf.waf_rules_premium ? "Rules updated in real-time" : "Rules updated with delay"}</div>
+            </div>
+            <div className="card kpi-card">
+              <div className="kpi-head">Real-Time IP Blocklist</div>
+              <div className="kpi-value" style={{ color: wf.ip_blocklist_enabled ? "var(--green)" : "var(--amber)", fontSize: 16 }}>
+                {wf.ip_blocklist_enabled ? "Enabled" : "Disabled"}
+              </div>
+              <div className="kpi-foot dim">Blocks requests from known malicious IPs</div>
+            </div>
+            <div className="card kpi-card">
+              <div className="kpi-head">Brute Force Protection</div>
+              <div className="kpi-value" style={{ color: wf.brute_force_enabled ? "var(--green)" : "var(--amber)", fontSize: 16 }}>
+                {wf.brute_force_enabled ? "Enabled" : "Disabled"}
+              </div>
+              <div className="kpi-foot dim">Stops password guessing attacks</div>
+            </div>
+          </div>
+
+          {/* Attack summary + scan issues */}
+          <div style={{ display: "grid", gridTemplateColumns: wf.scan_issues_count > 0 ? "1fr 1fr" : "1fr", gap: 16 }}>
+            {/* Firewall summary */}
+            <div className="card">
+              <div className="card-head">
+                <h3><Icon name="shield" size={14} /> Firewall Summary — Attacks Blocked</h3>
+              </div>
+              <div style={{ padding: "0 18px 14px" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                      <th style={{ textAlign: "left", padding: "6px 0", color: "var(--text-secondary)", fontWeight: 600 }}>Period</th>
+                      <th style={{ textAlign: "right", padding: "6px 4px", color: "var(--text-secondary)", fontWeight: 600 }}>Complex</th>
+                      <th style={{ textAlign: "right", padding: "6px 4px", color: "var(--text-secondary)", fontWeight: 600 }}>Brute Force</th>
+                      <th style={{ textAlign: "right", padding: "6px 4px", color: "var(--text-secondary)", fontWeight: 600 }}>Blocklist</th>
+                      <th style={{ textAlign: "right", padding: "6px 0", color: "var(--text-secondary)", fontWeight: 600 }}>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {attackRows.map(({ label, d }) => (
+                      <tr key={label} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                        <td style={{ padding: "7px 0", fontWeight: 600 }}>{label}</td>
+                        <td style={{ textAlign: "right", padding: "7px 4px" }}>{d.complex.toLocaleString()}</td>
+                        <td style={{ textAlign: "right", padding: "7px 4px" }}>{d.brute_force.toLocaleString()}</td>
+                        <td style={{ textAlign: "right", padding: "7px 4px" }}>{d.blocklist.toLocaleString()}</td>
+                        <td style={{ textAlign: "right", padding: "7px 0", fontWeight: 600, color: d.total > 0 ? "var(--text-primary)" : "var(--text-tertiary)" }}>{d.total.toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Scan issues */}
+            {wf.scan_issues_count > 0 && (
+              <div className="card">
+                <div className="card-head">
+                  <h3><Icon name="issue" size={14} /> Wordfence Scan Issues</h3>
+                  <Badge tone={wf.malware_found ? "crit" : "high"} dot>{wf.scan_issues_count}</Badge>
+                </div>
+                <div>
+                  {wf.scan_issues.slice(0, 8).map((si, i) => (
+                    <div key={i} className="feed-item">
+                      <Badge tone={si.severity === "critical" ? "crit" : si.severity === "warning" ? "high" : "med"}>{si.severity || "info"}</Badge>
+                      <div className="feed-body">
+                        <div className="feed-title" style={{ fontSize: 12.5 }}>{si.description || si.type}</div>
+                        <div className="feed-meta dim">{si.type}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Top blocked IPs + Top countries */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            <div className="card">
+              <div className="card-head">
+                <h3><Icon name="globe" size={14} /> Top IPs Blocked — Last 7 Days</h3>
+              </div>
+              {wf.top_blocked_ips.length === 0 ? (
+                <div className="empty" style={{ padding: "24px 18px" }}>No blocked IPs in the last 7 days.</div>
+              ) : (
+                <div style={{ padding: "0 18px 14px" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                    <thead>
+                      <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                        <th style={{ textAlign: "left", padding: "6px 0", color: "var(--text-secondary)", fontWeight: 600 }}>IP</th>
+                        <th style={{ textAlign: "left", padding: "6px 8px", color: "var(--text-secondary)", fontWeight: 600 }}>Country</th>
+                        <th style={{ textAlign: "right", padding: "6px 0", color: "var(--text-secondary)", fontWeight: 600 }}>Blocks</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {wf.top_blocked_ips.map((row, i) => (
+                        <tr key={i} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                          <td style={{ padding: "6px 0", fontFamily: "var(--font-mono)", fontSize: 11.5 }}>{row.ip}</td>
+                          <td style={{ padding: "6px 8px" }}>{row.country || "—"}</td>
+                          <td style={{ textAlign: "right", padding: "6px 0", fontWeight: 600 }}>{row.count.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="card">
+              <div className="card-head">
+                <h3><Icon name="globe" size={14} /> Top Countries by Attacks — Last 7 Days</h3>
+              </div>
+              {wf.top_countries.length === 0 ? (
+                <div className="empty" style={{ padding: "24px 18px" }}>No country data available.</div>
+              ) : (
+                <div style={{ padding: "0 18px 14px" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                    <thead>
+                      <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                        <th style={{ textAlign: "left", padding: "6px 0", color: "var(--text-secondary)", fontWeight: 600 }}>Country</th>
+                        <th style={{ textAlign: "right", padding: "6px 0", color: "var(--text-secondary)", fontWeight: 600 }}>Block Count</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {wf.top_countries.map((row, i) => (
+                        <tr key={i} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                          <td style={{ padding: "6px 0" }}>{row.country}</td>
+                          <td style={{ textAlign: "right", padding: "6px 0", fontWeight: 600 }}>{row.count.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Login attempts */}
+          <div className="card">
+            <div className="card-head">
+              <h3><Icon name="user" size={14} /> Login Attempts</h3>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button className={`btn-sm ${loginTab === "failed" ? "btn-active" : "btn-ghost"}`} onClick={() => setLoginTab("failed")}>Failed</button>
+                <button className={`btn-sm ${loginTab === "success" ? "btn-active" : "btn-ghost"}`} onClick={() => setLoginTab("success")}>Successful</button>
+              </div>
+            </div>
+            {(() => {
+              const rows = loginTab === "failed" ? wf.login_failed : wf.login_success;
+              if (rows.length === 0) return <div className="empty" style={{ padding: "24px 18px" }}>No {loginTab === "failed" ? "failed" : "successful"} login attempts recorded.</div>;
+              return (
+                <div style={{ padding: "0 18px 14px" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                    <thead>
+                      <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                        <th style={{ textAlign: "left", padding: "6px 0", color: "var(--text-secondary)", fontWeight: 600 }}>Username</th>
+                        <th style={{ textAlign: "left", padding: "6px 8px", color: "var(--text-secondary)", fontWeight: 600 }}>IP</th>
+                        <th style={{ textAlign: "left", padding: "6px 0", color: "var(--text-secondary)", fontWeight: 600 }}>Date</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((r, i) => (
+                        <tr key={i} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                          <td style={{ padding: "6px 0" }}>{r.username}</td>
+                          <td style={{ padding: "6px 8px", fontFamily: "var(--font-mono)", fontSize: 11.5 }}>{r.ip}</td>
+                          <td style={{ padding: "6px 0", color: "var(--text-secondary)" }}>{r.time ? fmtTime(r.time) : "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
+          </div>
+        </>
+      )}
+
       {/* Error log */}
       {secData?.error_log_lines && secData.error_log_lines.length > 0 && (
         <div className="card">
@@ -4155,7 +4470,7 @@ const SecurityTab = ({
         </div>
       )}
 
-      {/* Security issues */}
+      {/* Security issues from issue tracker */}
       {secIssues.length > 0 && (
         <div className="card">
           <div className="card-head">
@@ -4176,7 +4491,7 @@ const SecurityTab = ({
         </div>
       )}
 
-      {secIssues.length === 0 && !secData && !latestCheck && (
+      {secIssues.length === 0 && !secData && !latestCheck && !wf && (
         <div className="card">
           <div className="empty" style={{ padding: "40px 18px" }}>
             No security data yet. Run a scan or connect the WordPress plugin to collect security information.
@@ -4184,7 +4499,7 @@ const SecurityTab = ({
         </div>
       )}
 
-      {secIssues.length === 0 && (secData || latestCheck) && (
+      {secIssues.length === 0 && (secData || latestCheck) && !wf?.malware_found && (wf?.scan_issues_count ?? 0) === 0 && (
         <div className="card">
           <div className="empty" style={{ padding: "28px 18px", color: "var(--green)" }}>
             <Icon name="check" size={16} /> No active security issues detected.
@@ -4214,9 +4529,45 @@ const FormsTab = ({
 
   const passing = formChecks.filter((f) => f.status === "pass").length;
   const failing = formChecks.filter((f) => f.status === "fail" || f.status === "error").length;
-  const skipped = formChecks.filter((f) => f.status === "skip").length;
 
-  const wpForms = wpSnapshot?.form_data ?? [];
+  const allForms     = wpSnapshot?.form_data ?? [];
+  const wpformForms  = allForms.filter((f) => f.plugin === "WPForms");
+  const otherForms   = allForms.filter((f) => f.plugin !== "WPForms");
+  const hasWpData    = wpformForms.some((f) => f.completed_total != null);
+
+  const totalCompletedMonth  = wpformForms.reduce((s, f) => s + (f.completed_month  ?? 0), 0);
+  const totalAbandonedMonth  = wpformForms.reduce((s, f) => s + (f.abandoned_month  ?? 0), 0);
+  const totalCompletedLast   = wpformForms.reduce((s, f) => s + (f.completed_last   ?? 0), 0);
+  const totalAbandonedLast   = wpformForms.reduce((s, f) => s + (f.abandoned_last   ?? 0), 0);
+  const totalSubmissionsMonth = totalCompletedMonth + totalAbandonedMonth;
+  const abandonRate = totalSubmissionsMonth > 0
+    ? Math.round((totalAbandonedMonth / totalSubmissionsMonth) * 100) : 0;
+
+  // Aggregate all field breakdowns and abandonment reasons across all forms
+  const allBreakdowns: { field: string; values: { value: string; count: number }[] }[] = [];
+  const allAbandonReasons: { field: string; count: number }[] = [];
+  const reasonMap: Record<string, number> = {};
+  for (const f of wpformForms) {
+    for (const bd of (f.field_breakdowns ?? [])) {
+      const existing = allBreakdowns.find((b) => b.field === bd.field);
+      if (existing) {
+        for (const v of bd.values) {
+          const ev = existing.values.find((x) => x.value === v.value);
+          if (ev) ev.count += v.count; else existing.values.push({ ...v });
+        }
+        existing.values.sort((a, b) => b.count - a.count);
+      } else {
+        allBreakdowns.push({ field: bd.field, values: [...bd.values] });
+      }
+    }
+    for (const r of (f.abandonment_reasons ?? [])) {
+      reasonMap[r.field] = (reasonMap[r.field] ?? 0) + r.count;
+    }
+  }
+  for (const [field, count] of Object.entries(reasonMap)) {
+    allAbandonReasons.push({ field, count });
+  }
+  allAbandonReasons.sort((a, b) => b.count - a.count);
 
   const statusTone = (s: FormCheckRow["status"]) => {
     if (s === "pass") return "ok";
@@ -4224,47 +4575,154 @@ const FormsTab = ({
     return "high";
   };
 
+  const Trend = ({ curr, prev }: { curr: number; prev: number }) => {
+    if (prev === 0) return <span className="dim">—</span>;
+    const d = curr - prev;
+    return <span style={{ fontWeight: 600, fontSize: 12, color: d >= 0 ? "var(--green)" : "var(--red)" }}>{d >= 0 ? "▲" : "▼"}{Math.abs(d)}</span>;
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      {/* Summary */}
+
+      {/* KPI summary */}
       <div className="grid-4">
         <div className="card kpi-card">
-          <div className="kpi-head"><Icon name="check" size={13} /> Passing</div>
-          <div className="kpi-value" style={{ color: "var(--green)" }}>{passing}</div>
-          <div className="kpi-foot dim">form checks passed</div>
+          <div className="kpi-head"><Icon name="check" size={13} /> Completed</div>
+          <div className="kpi-value" style={{ color: "var(--green)" }}>{hasWpData ? totalCompletedMonth.toLocaleString() : passing}</div>
+          <div className="kpi-foot dim">
+            {hasWpData ? "this month" : "form checks passed"}
+            {hasWpData && totalCompletedLast > 0 && <>&nbsp;<Trend curr={totalCompletedMonth} prev={totalCompletedLast} /></>}
+          </div>
         </div>
         <div className="card kpi-card">
-          <div className="kpi-head"><Icon name="issue" size={13} /> Failing</div>
-          <div className="kpi-value" style={{ color: failing > 0 ? "var(--red)" : "var(--green)" }}>{failing}</div>
-          <div className="kpi-foot dim">{failing > 0 ? "requires attention" : "no failures"}</div>
+          <div className="kpi-head"><Icon name="issue" size={13} /> Abandoned</div>
+          <div className="kpi-value" style={{ color: hasWpData && totalAbandonedMonth > 0 ? "var(--amber)" : "var(--text-tertiary)" }}>
+            {hasWpData ? totalAbandonedMonth.toLocaleString() : failing}
+          </div>
+          <div className="kpi-foot dim">
+            {hasWpData ? "this month" : failing > 0 ? "requires attention" : "no failures"}
+            {hasWpData && totalAbandonedLast > 0 && <>&nbsp;<Trend curr={totalAbandonedMonth} prev={totalAbandonedLast} /></>}
+          </div>
         </div>
         <div className="card kpi-card">
-          <div className="kpi-head"><Icon name="clock" size={13} /> Skipped</div>
-          <div className="kpi-value" style={{ color: "var(--text-tertiary)" }}>{skipped}</div>
-          <div className="kpi-foot dim">not tested</div>
+          <div className="kpi-head"><Icon name="bolt" size={13} /> Abandon rate</div>
+          <div className="kpi-value" style={{ color: abandonRate > 20 ? "var(--red)" : abandonRate > 10 ? "var(--amber)" : "var(--green)" }}>
+            {hasWpData ? `${abandonRate}%` : "—"}
+          </div>
+          <div className="kpi-foot dim">{hasWpData ? "of all submissions" : "sync WP plugin for data"}</div>
         </div>
         <div className="card kpi-card">
-          <div className="kpi-head"><Icon name="bolt" size={13} /> Detected</div>
-          <div className="kpi-value" style={{ color: "var(--cyan)" }}>{wpForms.length}</div>
-          <div className="kpi-foot dim">form plugins/forms via WP</div>
+          <div className="kpi-head"><Icon name="clock" size={13} /> Forms</div>
+          <div className="kpi-value" style={{ color: "var(--cyan)" }}>{wpformForms.length || allForms.length}</div>
+          <div className="kpi-foot dim">WPForms detected</div>
         </div>
       </div>
 
-      {/* Form checks list */}
+      {/* Per-form submission table */}
+      {hasWpData && (
+        <div className="card">
+          <div className="card-head">
+            <h3><Icon name="bolt" size={14} /> WPForms — Completed vs Abandoned</h3>
+            <span className="h-sub">from WordPress plugin sync</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 1fr 1fr", gap: 10, padding: "8px 18px", borderBottom: "1px solid var(--border-soft)", fontSize: 11, color: "var(--text-tertiary)" }}>
+            <div>Form</div>
+            <div style={{ textAlign: "right" }}>Completed</div>
+            <div style={{ textAlign: "right" }}>Abandoned</div>
+            <div style={{ textAlign: "right" }}>This month ✓</div>
+            <div style={{ textAlign: "right" }}>Last month ✓</div>
+            <div style={{ textAlign: "right" }}>This month ✗</div>
+            <div style={{ textAlign: "right" }}>Trend ✓</div>
+          </div>
+          {wpformForms.map((f, i) => (
+            <div key={i} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 1fr 1fr", gap: 10, padding: "12px 18px", borderBottom: "1px solid var(--border-soft)", alignItems: "center" }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{f.name ?? `Form ${f.id}`}</div>
+                {f.id && <div className="dim" style={{ fontSize: 11 }}>ID {f.id}</div>}
+              </div>
+              <div style={{ textAlign: "right", fontWeight: 600, color: "var(--green)" }}>{(f.completed_total ?? 0).toLocaleString()}</div>
+              <div style={{ textAlign: "right", color: (f.abandoned_total ?? 0) > 0 ? "var(--amber)" : "var(--text-tertiary)" }}>{(f.abandoned_total ?? 0).toLocaleString()}</div>
+              <div style={{ textAlign: "right" }}>{(f.completed_month ?? 0).toLocaleString()}</div>
+              <div style={{ textAlign: "right", color: "var(--text-tertiary)" }}>{(f.completed_last ?? 0).toLocaleString()}</div>
+              <div style={{ textAlign: "right", color: (f.abandoned_month ?? 0) > 0 ? "var(--amber)" : "var(--text-tertiary)" }}>{(f.abandoned_month ?? 0).toLocaleString()}</div>
+              <div style={{ textAlign: "right" }}><Trend curr={f.completed_month ?? 0} prev={f.completed_last ?? 0} /></div>
+            </div>
+          ))}
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 1fr 1fr", gap: 10, padding: "10px 18px", background: "rgba(255,255,255,0.02)", fontSize: 12, fontWeight: 600 }}>
+            <div style={{ color: "var(--text-secondary)" }}>Total</div>
+            <div style={{ textAlign: "right", color: "var(--green)" }}>{wpformForms.reduce((s, f) => s + (f.completed_total ?? 0), 0).toLocaleString()}</div>
+            <div style={{ textAlign: "right", color: "var(--amber)" }}>{wpformForms.reduce((s, f) => s + (f.abandoned_total ?? 0), 0).toLocaleString()}</div>
+            <div style={{ textAlign: "right" }}>{totalCompletedMonth.toLocaleString()}</div>
+            <div style={{ textAlign: "right", color: "var(--text-tertiary)" }}>{totalCompletedLast.toLocaleString()}</div>
+            <div style={{ textAlign: "right", color: "var(--amber)" }}>{totalAbandonedMonth.toLocaleString()}</div>
+            <div style={{ textAlign: "right" }}><Trend curr={totalCompletedMonth} prev={totalCompletedLast} /></div>
+          </div>
+        </div>
+      )}
+
+      {/* Field-level breakdowns */}
+      {allBreakdowns.length > 0 && (
+        <div className="card">
+          <div className="card-head">
+            <h3><Icon name="bolt" size={14} /> Field breakdowns</h3>
+            <span className="h-sub">last 30 days · completed entries only</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 0 }}>
+            {allBreakdowns.map((bd, bi) => {
+              const maxCount = bd.values[0]?.count ?? 1;
+              const total = bd.values.reduce((s, v) => s + v.count, 0);
+              return (
+                <div key={bi} style={{ padding: "16px 20px", borderRight: "1px solid var(--border-soft)", borderBottom: "1px solid var(--border-soft)" }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-secondary)", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.04em" }}>{bd.field}</div>
+                  {bd.values.slice(0, 10).map((v, vi) => (
+                    <div key={vi} style={{ marginBottom: 7 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 3 }}>
+                        <span style={{ color: "var(--text-primary)" }}>{v.value || <em style={{ color: "var(--text-tertiary)" }}>Empty</em>}</span>
+                        <span style={{ fontWeight: 600, color: "var(--text-secondary)" }}>{v.count.toLocaleString()} <span className="dim">({Math.round((v.count / total) * 100)}%)</span></span>
+                      </div>
+                      <div style={{ height: 4, background: "var(--border-soft)", borderRadius: 2, overflow: "hidden" }}>
+                        <div style={{ height: "100%", width: `${Math.round((v.count / maxCount) * 100)}%`, background: "var(--cyan)", borderRadius: 2 }} />
+                      </div>
+                    </div>
+                  ))}
+                  {bd.values.length > 10 && <div className="dim" style={{ fontSize: 11, marginTop: 4 }}>+{bd.values.length - 10} more values</div>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Abandonment reasons */}
+      {allAbandonReasons.length > 0 && (
+        <div className="card">
+          <div className="card-head">
+            <h3><Icon name="issue" size={14} /> Top reasons for abandonment</h3>
+            <span className="h-sub">required fields missing in abandoned entries · last 30 days</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 0 }}>
+            {allAbandonReasons.slice(0, 6).map((r, i) => (
+              <div key={i} style={{ padding: "20px", borderRight: "1px solid var(--border-soft)", borderBottom: "1px solid var(--border-soft)", textAlign: "center" }}>
+                <div style={{ fontSize: 28, fontWeight: 700, color: "var(--amber)", marginBottom: 4 }}>{r.count}</div>
+                <div style={{ fontSize: 12.5, color: "var(--text-secondary)" }}>{r.field} not filled</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Form check results */}
       {formChecks.length > 0 ? (
         <div className="card">
           <div className="card-head">
-            <h3><Icon name="check" size={14} /> Form check results</h3>
+            <h3><Icon name="check" size={14} /> Playwright form checks</h3>
             <button className="btn sm" onClick={() => { onRunChecks(); showFormsToast("Form checks queued…"); }} type="button">
-              <Icon name="play" size={12} /> Re-run checks
+              <Icon name="play" size={12} /> Re-run
             </button>
           </div>
           <div>
             <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1.2fr", gap: 12, padding: "8px 18px", borderBottom: "1px solid var(--border-soft)", fontSize: 11, color: "var(--text-tertiary)" }}>
-              <div>Form · Page</div>
-              <div>Plugin</div>
-              <div>Status</div>
-              <div>Tested</div>
+              <div>Form · Page</div><div>Plugin</div><div>Status</div><div>Tested</div>
             </div>
             {formChecks.map((f) => (
               <div key={f.id} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1.2fr", gap: 12, padding: "12px 18px", borderBottom: "1px solid var(--border-soft)", alignItems: "center" }}>
@@ -4283,26 +4741,24 @@ const FormsTab = ({
       ) : (
         <div className="card">
           <div className="card-head">
-            <h3><Icon name="check" size={14} /> Form checks</h3>
+            <h3><Icon name="check" size={14} /> Playwright form checks</h3>
             <button className="btn sm" onClick={() => { onRunChecks(); showFormsToast("Form checks queued…"); }} type="button">
               <Icon name="play" size={12} /> Run checks
             </button>
           </div>
-          <div className="empty" style={{ padding: "40px 18px" }}>
-            No form checks yet. Run a scan to test forms on this site.
-          </div>
+          <div className="empty" style={{ padding: "32px 18px" }}>No Playwright form checks yet. Run a scan to test forms on this site.</div>
         </div>
       )}
 
-      {/* WordPress form plugins detected */}
-      {wpForms.length > 0 && (
+      {/* Other form plugins */}
+      {otherForms.length > 0 && (
         <div className="card">
           <div className="card-head">
-            <h3><Icon name="wp" size={14} /> Detected form plugins</h3>
+            <h3><Icon name="wp" size={14} /> Other detected form plugins</h3>
             <span className="h-sub">from WordPress plugin</span>
           </div>
           <div>
-            {wpForms.map((f, i) => (
+            {otherForms.map((f, i) => (
               <div key={i} className="feed-item">
                 <div className="feed-icon" style={{ color: f.active ? "var(--green)" : "var(--text-dim)", borderColor: f.active ? "rgba(34,197,94,0.3)" : "var(--border-soft)" }}>
                   <Icon name="bolt" size={13} />
@@ -4311,7 +4767,7 @@ const FormsTab = ({
                   <div className="feed-title">{f.name ?? f.plugin}</div>
                   <div className="feed-meta">
                     <span>{f.plugin}</span>
-                    {f.submissions != null && <><span className="pip" /><span>{f.submissions} submissions</span></>}
+                    {f.submissions != null && <><span className="pip" /><span>{f.submissions.toLocaleString()} submissions</span></>}
                   </div>
                 </div>
                 <Badge tone={f.active ? "ok" : "high"}>{f.active ? "Active" : "Inactive"}</Badge>
@@ -4327,3 +4783,247 @@ const FormsTab = ({
     </div>
   );
 };
+
+// ============ Visual Changes Tab ============
+
+const VisualChangesChangeRow = ({
+  tone, type, label, region, conf, active, onOpen,
+}: {
+  tone: "crit" | "warn" | "info"; type: string; label: string;
+  region: string; conf: number; active?: boolean; onOpen?: () => void;
+}) => (
+  <div
+    className="feed-item"
+    style={{ background: active ? "rgba(239,68,68,0.05)" : undefined, cursor: onOpen ? "pointer" : "default" }}
+    onClick={onOpen}
+  >
+    <div
+      className="feed-icon"
+      style={{
+        borderColor: tone === "crit" ? "rgba(239,68,68,0.4)" : tone === "warn" ? "rgba(245,158,11,0.4)" : "rgba(0,229,255,0.3)",
+        color: tone === "crit" ? "#FCA5A5" : tone === "warn" ? "#FCD37A" : "#7DE4F2",
+      }}
+    >
+      <Icon name={tone === "crit" ? "issue" : tone === "warn" ? "diff" : "code"} size={14} />
+    </div>
+    <div className="feed-body">
+      <div className="feed-title">{label}</div>
+      <div className="feed-meta">
+        <span>{type}</span>
+        <span className="pip" />
+        <span className="mono">{region}</span>
+      </div>
+    </div>
+    <Badge tone="ghost">{conf}%</Badge>
+  </div>
+);
+
+const VisualComparisonPane = ({
+  label, subtitle, viewport, siteUrl, mode, hasRegression,
+}: {
+  label: string; subtitle: string; viewport: string;
+  siteUrl: string; mode: "baseline" | "current"; hasRegression?: boolean;
+}) => {
+  const isMobile = viewport === "Mobile";
+  const isTablet = viewport === "Tablet";
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+        <div>
+          <div className="label-strip">{label}</div>
+          <div style={{ fontSize: 13, color: "var(--text-primary)", marginTop: 2 }}>{subtitle}</div>
+        </div>
+        <Badge tone="ghost">
+          <Icon name={isMobile ? "mobile" : isTablet ? "tablet" : "desktop"} size={11} /> {viewport}
+        </Badge>
+      </div>
+      <div
+        className={`viewport-mock ${isTablet ? "tablet" : ""} ${isMobile ? "mobile" : ""}`}
+        style={{ height: isMobile ? 480 : 420 }}
+      >
+        <div className="vp-head" style={{ height: 24, background: "rgba(255,255,255,0.04)" }}>
+          <div className="vp-dots"><span /><span /><span /></div>
+          <div className="vp-url">{siteUrl}</div>
+        </div>
+        <div className="vp-content" style={{ padding: 14, overflowY: "auto", height: "calc(100% - 24px)" }}>
+          <div className="mock-block h1" />
+          <div className="mock-block p" />
+          <div className="mock-block p s" />
+          <div className="mock-block img" style={{ minHeight: isMobile ? 100 : 140 }} />
+          {mode === "baseline" && <div className="mock-block btn-pri" style={{ background: "var(--gold)" }} />}
+          {mode === "current" && hasRegression && (
+            <div style={{ border: "2px dashed var(--red)", borderRadius: 6, padding: 10, background: "rgba(239,68,68,0.08)", color: "#FCA5A5", fontSize: 11.5, fontFamily: "var(--font-mono)", textAlign: "center" }}>
+              regression detected
+            </div>
+          )}
+          {mode === "current" && !hasRegression && <div className="mock-block btn-pri" style={{ background: "var(--gold)" }} />}
+          <div className="mock-block p" />
+          <div className="mock-block p s" />
+          <div style={{ display: "flex", gap: 8 }}>
+            <div className="mock-block" style={{ flex: 1, height: 50, background: "rgba(255,255,255,0.03)" }} />
+            <div className="mock-block" style={{ flex: 1, height: 50, background: "rgba(255,255,255,0.03)" }} />
+            {!isMobile && <div className="mock-block" style={{ flex: 1, height: 50, background: "rgba(255,255,255,0.03)" }} />}
+          </div>
+        </div>
+        {mode === "current" && hasRegression && (
+          <div className="diff-overlay crit" style={{ left: "8%", top: "40%", width: "84%", height: "10%", pointerEvents: "none" }}>
+            <span className="tag">regression detected</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+function VisualChangesTab({ site, issues }: { site: Site; issues: Issue[] }) {
+  const router = useRouter();
+  const [viewport, setViewport] = useState("Desktop");
+  const [toast, setToast] = useState<string | null>(null);
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
+
+  const regressionIssues = issues.filter(
+    (i) => i.category === "Visual regression" && i.status !== "Resolved" && i.status !== "Ignored"
+  );
+
+  const handleApprove = () => showToast(`Baseline approved for ${site.name} · ${viewport}.`);
+
+  const handleFlag = () => {
+    if (regressionIssues.length > 0) {
+      router.push(`/issues/${regressionIssues[0].id}`);
+    } else {
+      showToast(`Visual regression ticket created for ${site.name}.`);
+    }
+  };
+
+  const handleDefer = () => showToast("Review deferred. Will surface at next team sync.");
+
+  return (
+    <div>
+      <div className="page-head" style={{ marginBottom: 18 }}>
+        <div>
+          <h2 style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 18, fontWeight: 600, margin: 0 }}>
+            <Icon name="diff" size={18} />
+            Visual changes
+            {regressionIssues.length > 0 && (
+              <Badge tone="crit" dot>
+                {regressionIssues.length} open regression{regressionIssues.length !== 1 ? "s" : ""}
+              </Badge>
+            )}
+          </h2>
+          <p className="page-sub" style={{ marginTop: 4 }}>
+            Side-by-side baseline vs. latest scan. Horus highlights changed regions and explains what type of change it sees.
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button className="btn" onClick={handleFlag} type="button">Flag as issue</button>
+          <button className="btn primary" onClick={handleApprove} type="button">
+            <Icon name="check" size={13} /> Approve change
+          </button>
+        </div>
+      </div>
+
+      {/* Viewport selector */}
+      <div className="card" style={{ marginBottom: 18, padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10 }}>
+        <span className="label-strip">Viewport</span>
+        <Tabs tabs={["Desktop", "Tablet", "Mobile"]} active={viewport} onChange={setViewport} />
+      </div>
+
+      {/* Comparison panes */}
+      <div className="grid-2eq" style={{ marginBottom: 18, alignItems: "start" }}>
+        <VisualComparisonPane
+          label="Baseline"
+          subtitle="Last approved baseline"
+          viewport={viewport}
+          siteUrl={site.url}
+          mode="baseline"
+        />
+        <VisualComparisonPane
+          label="Current"
+          subtitle={`Latest scan · ${site.lastScan ?? "—"}`}
+          viewport={viewport}
+          siteUrl={site.url}
+          mode="current"
+          hasRegression={regressionIssues.length > 0}
+        />
+      </div>
+
+      {/* Changes list + AI panel */}
+      <div className="grid-2">
+        <div className="card">
+          <div className="card-head">
+            <h3><Icon name="diff" size={14} /> Detected changes</h3>
+            <span className="h-sub">{viewport} viewport</span>
+          </div>
+          <div>
+            {regressionIssues.length > 0 ? (
+              regressionIssues.map((issue) => (
+                <VisualChangesChangeRow
+                  key={issue.id}
+                  tone="crit"
+                  type={issue.changeType}
+                  label={issue.title}
+                  region={`Page: ${issue.page}`}
+                  conf={issue.confidence}
+                  active
+                  onOpen={() => router.push(`/issues/${issue.id}`)}
+                />
+              ))
+            ) : (
+              <div className="empty" style={{ padding: "40px 10px" }}>
+                No visual differences detected. Either the baseline matches the current scan or no baseline has been set yet.
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          <div className="ai-callout">
+            <span className="ai-tag"><Icon name="sparkles" size={11} /> Horus explanation</span>
+            {regressionIssues.length > 0 ? (
+              <>
+                <div style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 500, lineHeight: 1.4, marginTop: 10 }}>
+                  {regressionIssues.length} visual regression{regressionIssues.length !== 1 ? "s" : ""} detected on {site.name}.
+                </div>
+                <div style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 10, lineHeight: 1.6 }}>
+                  {regressionIssues[0].recommended}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
+                  <Badge tone="med" lg>{regressionIssues[0].confidence}% confidence</Badge>
+                  <Badge tone="ghost">{regressionIssues[0].changeType}</Badge>
+                </div>
+              </>
+            ) : (
+              <div style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 10, lineHeight: 1.6 }}>
+                Layout matches the active baseline with high accuracy. No unexpected changes detected on {site.name} ({viewport.toLowerCase()}).
+              </div>
+            )}
+          </div>
+
+          <div className="card">
+            <div className="card-head"><h3>Verdict</h3></div>
+            <div className="card-pad">
+              <div style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.6, marginBottom: 16 }}>
+                Once you decide on this scan, Horus will use it as the new baseline for future comparisons.
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <button className="btn primary full" onClick={handleApprove} type="button">
+                  <Icon name="check" size={13} /> Approve change · set new baseline
+                </button>
+                <button className="btn full" onClick={handleFlag} type="button">
+                  <Icon name="x" size={13} /> Flag as issue · open ticket
+                </button>
+                <button className="btn ghost full" onClick={handleDefer} type="button">
+                  Defer · review at standup
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {toast && (
+        <div style={{ position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)", background: "var(--bg-card)", border: "1px solid var(--border-soft)", borderRadius: 10, padding: "10px 20px", fontSize: 13, fontWeight: 500, color: "var(--text-primary)", boxShadow: "0 4px 24px rgba(0,0,0,0.5)", zIndex: 9999, pointerEvents: "none" }}>{toast}</div>
+      )}
+    </div>
+  );
+}

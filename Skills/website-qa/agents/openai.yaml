@@ -1,0 +1,5 @@
+interface:
+  display_name: Claude Website QA
+  short_description: Playwright-first website QA, issue reporting, and retesting workflow.
+  icon: globe
+  color: blue

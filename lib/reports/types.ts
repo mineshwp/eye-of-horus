@@ -40,10 +40,53 @@ export interface ReportPlaywright {
   passRate: number;
 }
 
+export interface WPFormStat {
+  name: string;
+  id: number;
+  completedTotal: number;
+  abandonedTotal: number;
+  completedMonth: number;
+  abandonedMonth: number;
+  completedLast: number;
+  abandonedLast: number;
+}
+
+export interface WPFormBreakdown {
+  field: string;
+  values: { value: string; count: number }[];
+}
+
 export interface ReportForms {
   detected: number;
   tested: number;
   passed: number;
+  wpforms?: WPFormStat[];
+  fieldBreakdowns?: WPFormBreakdown[];
+  abandonmentReasons?: { field: string; count: number }[];
+  totalCompletedThisMonth?: number;
+  totalAbandonedThisMonth?: number;
+  totalCompletedLastMonth?: number;
+}
+
+export interface ReportSecurityAttackPeriod {
+  complex: number;
+  brute_force: number;
+  blocklist: number;
+  total: number;
+}
+
+export interface ReportSecurity {
+  waf_enabled: boolean;
+  waf_rules_premium: boolean;
+  ip_blocklist_enabled: boolean;
+  brute_force_enabled: boolean;
+  attacks_today: ReportSecurityAttackPeriod;
+  attacks_week: ReportSecurityAttackPeriod;
+  attacks_month: ReportSecurityAttackPeriod;
+  scan_issues_count: number;
+  malware_found: boolean;
+  top_countries: { country: string; count: number }[];
+  last_scan_time: string | null;
 }
 
 export interface ReportContent {
@@ -52,6 +95,7 @@ export interface ReportContent {
   wordpress: ReportWordPress;
   playwright: ReportPlaywright;
   forms: ReportForms;
+  security?: ReportSecurity;
   recommendations: string[];
   siteName: string;
   siteUrl: string;

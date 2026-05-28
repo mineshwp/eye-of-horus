@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { useApp } from "@/context/AppContext";
+import { apiFetch } from "@/lib/auth/index";
 import {
   Icon,
   Badge,
@@ -20,8 +21,9 @@ export default function WpUpdatesPage() {
   const { sites, wpUpdates, activities } = useApp();
   const [filter, setFilter] = useState("All");
   const [localUpdates, setLocalUpdates] = useState(wpUpdates);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 4000); };
 
   useEffect(() => {
     setLocalUpdates(wpUpdates);
@@ -38,12 +40,27 @@ export default function WpUpdatesPage() {
     return true;
   });
 
-  const handleUpdate = (id: string, target: string, siteName: string) => {
+  const handleUpdate = async (id: string, target: string, siteId: string, siteName: string) => {
+    if (updatingId) return;
+    setUpdatingId(id);
     showToast(`Updating ${target} on ${siteName}…`);
-    setTimeout(() => {
-      setLocalUpdates((prev) => prev.filter((item) => item.id !== id));
-      showToast(`${target} updated successfully on ${siteName}.`);
-    }, 1200);
+    try {
+      const res = await apiFetch("/api/wordpress/update", {
+        method: "POST",
+        body: JSON.stringify({ siteId, pluginName: target }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setLocalUpdates((prev) => prev.filter((item) => item.id !== id));
+        showToast(`${target} updated successfully on ${siteName}.`);
+      } else {
+        showToast(`Update failed: ${data.error ?? "Unknown error"}`);
+      }
+    } catch {
+      showToast(`Update failed: could not reach the server.`);
+    } finally {
+      setUpdatingId(null);
+    }
   };
 
   const handleRunSafeUpdates = () => {
@@ -253,12 +270,12 @@ export default function WpUpdatesPage() {
                     </button>
                     <button
                       className={`btn ${u.flag === "Safe update" ? "primary" : ""} sm`}
-                      disabled={u.flag === "Do not update"}
-                      style={u.flag === "Do not update" ? { opacity: 0.4, cursor: "not-allowed" } : {}}
-                      onClick={() => handleUpdate(u.id, u.target, site?.name ?? "")}
+                      disabled={u.flag === "Do not update" || updatingId === u.id}
+                      style={(u.flag === "Do not update" || updatingId !== null) ? { opacity: 0.5, cursor: "not-allowed" } : {}}
+                      onClick={() => handleUpdate(u.id, u.target, site?.id ?? u.siteId, site?.name ?? "")}
                       type="button"
                     >
-                      Update
+                      {updatingId === u.id ? "Updating…" : "Update"}
                     </button>
                   </div>
                 </div>

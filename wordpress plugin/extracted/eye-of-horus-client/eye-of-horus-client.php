@@ -3,7 +3,7 @@
  * Plugin Name: Eye of Horus Client
  * Plugin URI: https://wetpaint.co.za/
  * Description: Technical monitoring and reporting agent for the Eye of Horus Dashboard.
- * Version: 2.0.0
+ * Version: 2.3.0
  * Author: Eye of Horus
  * Author URI: https://wetpaint.co.za/
  * Text Domain: eye-of-horus-client
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 
 if (!class_exists('Eye_Of_Horus_Client')) {
     final class Eye_Of_Horus_Client {
-        const VERSION      = '2.0.0';
+        const VERSION      = '2.3.0';
         const OPTION_NAME  = 'eoh_settings';
         const CRON_HOOK    = 'eoh_daily_sync';
         const LAST_SYNC    = 'eoh_last_sync_result';
@@ -38,6 +38,7 @@ if (!class_exists('Eye_Of_Horus_Client')) {
             add_action(self::CRON_HOOK,         [$this, 'sync_data']);
             add_action('wp_ajax_eoh_manual_sync',       [$this, 'ajax_manual_sync']);
             add_action('wp_ajax_eoh_test_connection',   [$this, 'ajax_test_connection']);
+            add_action('rest_api_init',                 [$this, 'register_rest_routes']);
 
             // Form submission tracking — A-Forms
             add_action('a_forms_after_form_submission', [$this, 'track_submission'], 10, 1);
@@ -95,12 +96,13 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                 'api_url'           => '',
                 'site_key'          => '',
                 'enabled_modules'   => [
-                    'core'      => '1',
-                    'plugins'   => '1',
-                    'themes'    => '1',
-                    'security'  => '1',
-                    'forms'     => '1',
-                    'server'    => '1',
+                    'core'       => '1',
+                    'plugins'    => '1',
+                    'themes'     => '1',
+                    'security'   => '1',
+                    'forms'      => '1',
+                    'server'     => '1',
+                    'wordfence'  => '1',
                 ],
                 'debug_mode'        => '',
             ];
@@ -138,7 +140,7 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                 $out['debug_mode'] = '1';
             }
 
-            $modules = ['core', 'plugins', 'themes', 'security', 'forms', 'server'];
+            $modules = ['core', 'plugins', 'themes', 'security', 'forms', 'server', 'wordfence'];
             foreach ($modules as $mod) {
                 $out['enabled_modules'][$mod] = !empty($input['enabled_modules'][$mod]) ? '1' : '';
             }
@@ -233,12 +235,13 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                     <table class="form-table" role="presentation">
                         <?php
                         $module_labels = [
-                            'core'     => __('Core (WP version, PHP, MySQL)', 'eye-of-horus-client'),
-                            'plugins'  => __('Plugins (active, inactive, updates)', 'eye-of-horus-client'),
-                            'themes'   => __('Themes (active, parent, updates)', 'eye-of-horus-client'),
-                            'security' => __('Security (debug mode, admin users, security plugin)', 'eye-of-horus-client'),
-                            'forms'    => __('Forms (A-Forms, WPForms, CF7, Gravity, Ninja, Elementor)', 'eye-of-horus-client'),
-                            'server'   => __('Server (DB size, cron status, error log)', 'eye-of-horus-client'),
+                            'core'       => __('Core (WP version, PHP, MySQL)', 'eye-of-horus-client'),
+                            'plugins'    => __('Plugins (active, inactive, updates)', 'eye-of-horus-client'),
+                            'themes'     => __('Themes (active, parent, updates)', 'eye-of-horus-client'),
+                            'security'   => __('Security (debug mode, admin users, security plugin)', 'eye-of-horus-client'),
+                            'forms'      => __('Forms (A-Forms, WPForms, CF7, Gravity, Ninja, Elementor)', 'eye-of-horus-client'),
+                            'server'     => __('Server (DB size, cron status, error log)', 'eye-of-horus-client'),
+                            'wordfence'  => __('Wordfence (firewall, attacks, logins, scan issues)', 'eye-of-horus-client'),
                         ];
                         foreach ($module_labels as $key => $label) : ?>
                             <tr>
@@ -468,6 +471,11 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                 ];
             }
 
+            // --- Wordfence ---
+            if (!empty($modules['wordfence'])) {
+                $payload['wordfence_data'] = $this->collect_wordfence_data();
+            }
+
             if (!empty($opts['debug_mode'])) {
                 error_log('[EOH] Sync payload: ' . wp_json_encode($payload));
             }
@@ -531,15 +539,33 @@ if (!class_exists('Eye_Of_Horus_Client')) {
 
             // WPForms
             if (function_exists('wpforms')) {
-                $wpforms = wpforms()->form->get('', ['numberposts' => 50]);
-                if (!empty($wpforms)) {
-                    foreach ($wpforms as $f) {
+                $wpforms_list = wpforms()->form->get('', ['numberposts' => 50]);
+                if (!empty($wpforms_list)) {
+                    $analytics         = $this->get_wpforms_analytics();
+                    $has_entries_table = $analytics !== null;
+                    foreach ($wpforms_list as $f) {
+                        $fid  = (int) $f->ID;
+                        $data = ($has_entries_table && isset($analytics[$fid])) ? $analytics[$fid] : null;
                         $forms[] = [
-                            'plugin'      => 'WPForms',
-                            'name'        => $f->post_title,
-                            'id'          => $f->ID,
-                            'active'      => true,
-                            'submissions' => null, // requires WPForms Pro
+                            'plugin'              => 'WPForms',
+                            'name'                => $f->post_title,
+                            'id'                  => $fid,
+                            'active'              => true,
+                            'has_entries_table'   => $has_entries_table,
+                            // Submission counts
+                            'completed_total'     => $data ? $data['completed_total'] : null,
+                            'abandoned_total'     => $data ? $data['abandoned_total'] : null,
+                            'completed_month'     => $data ? $data['completed_month'] : null,
+                            'abandoned_month'     => $data ? $data['abandoned_month'] : null,
+                            'completed_last'      => $data ? $data['completed_last'] : null,
+                            'abandoned_last'      => $data ? $data['abandoned_last'] : null,
+                            // Backward-compat aliases used by earlier dashboard code
+                            'submissions'         => $data ? $data['completed_total'] : null,
+                            'submissions_month'   => $data ? $data['completed_month'] : null,
+                            'submissions_prev_month' => $data ? $data['completed_last'] : null,
+                            // Field-level analytics
+                            'field_breakdowns'    => $data ? $data['field_breakdowns'] : [],
+                            'abandonment_reasons' => $data ? $data['abandonment_reasons'] : [],
                         ];
                     }
                 }
@@ -599,11 +625,432 @@ if (!class_exists('Eye_Of_Horus_Client')) {
             return $forms;
         }
 
+        /**
+         * Pull comprehensive WPForms analytics from the wpforms_entries table.
+         *
+         * Returns null when the entries table does not exist (WPForms Lite).
+         * Returns an array keyed by form_id, each entry containing:
+         *   completed_total, abandoned_total, completed_month, abandoned_month,
+         *   completed_last, abandoned_last, field_breakdowns, abandonment_reasons.
+         *
+         * "Completed" = status NOT IN ('spam','trash','abandoned').
+         * "Abandoned" = status = 'abandoned' (WPForms Partial Submissions addon).
+         * Field breakdowns cover the last 30 days of completed entries (capped at 500 rows per form).
+         * Abandonment reasons = required fields missing in abandoned entries, last 30 days.
+         */
+        private function get_wpforms_analytics() {
+            global $wpdb;
+
+            if ( ! function_exists( 'wpforms' ) ) {
+                return null;
+            }
+
+            $table = $wpdb->prefix . 'wpforms_entries';
+
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+            $exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) );
+            if ( $exists !== $table ) {
+                return null; // WPForms Lite — entries are not persisted to DB
+            }
+
+            $wpforms_list = wpforms()->form->get( '', [ 'numberposts' => 50 ] );
+            if ( empty( $wpforms_list ) ) {
+                return [];
+            }
+
+            $now              = current_time( 'timestamp' );
+            $this_month_start = date( 'Y-m-01 00:00:00', $now );
+            $last_month_ts    = mktime( 0, 0, 0, (int) date( 'n', $now ) - 1, 1, (int) date( 'Y', $now ) );
+            $last_month_start = date( 'Y-m-01 00:00:00', $last_month_ts );
+            $last_month_end   = date( 'Y-m-t 23:59:59', $last_month_ts );
+            $thirty_days_ago  = date( 'Y-m-d 00:00:00', strtotime( '-30 days', $now ) );
+
+            $result = [];
+
+            foreach ( $wpforms_list as $form ) {
+                $form_id = (int) $form->ID;
+
+                // ── Count queries ──────────────────────────────────────────────────
+
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                $all_rows = $wpdb->get_results(
+                    $wpdb->prepare(
+                        "SELECT status, COUNT(*) AS cnt FROM `{$table}` WHERE form_id = %d AND status NOT IN ('spam','trash') GROUP BY status",
+                        $form_id
+                    ),
+                    ARRAY_A
+                );
+                $completed_total = 0;
+                $abandoned_total = 0;
+                foreach ( (array) $all_rows as $r ) {
+                    if ( $r['status'] === 'abandoned' ) {
+                        $abandoned_total += (int) $r['cnt'];
+                    } else {
+                        $completed_total += (int) $r['cnt'];
+                    }
+                }
+
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                $month_rows = $wpdb->get_results(
+                    $wpdb->prepare(
+                        "SELECT status, COUNT(*) AS cnt FROM `{$table}` WHERE form_id = %d AND status NOT IN ('spam','trash') AND `date` >= %s GROUP BY status",
+                        $form_id, $this_month_start
+                    ),
+                    ARRAY_A
+                );
+                $completed_month = 0;
+                $abandoned_month = 0;
+                foreach ( (array) $month_rows as $r ) {
+                    if ( $r['status'] === 'abandoned' ) {
+                        $abandoned_month += (int) $r['cnt'];
+                    } else {
+                        $completed_month += (int) $r['cnt'];
+                    }
+                }
+
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                $last_rows = $wpdb->get_results(
+                    $wpdb->prepare(
+                        "SELECT status, COUNT(*) AS cnt FROM `{$table}` WHERE form_id = %d AND status NOT IN ('spam','trash') AND `date` >= %s AND `date` <= %s GROUP BY status",
+                        $form_id, $last_month_start, $last_month_end
+                    ),
+                    ARRAY_A
+                );
+                $completed_last = 0;
+                $abandoned_last = 0;
+                foreach ( (array) $last_rows as $r ) {
+                    if ( $r['status'] === 'abandoned' ) {
+                        $abandoned_last += (int) $r['cnt'];
+                    } else {
+                        $completed_last += (int) $r['cnt'];
+                    }
+                }
+
+                // ── Form schema: identify choice + required fields ─────────────────
+
+                $form_content   = wpforms()->form->get( $form_id, [ 'content_only' => true ] );
+                $schema_fields  = [];
+                if ( is_array( $form_content ) ) {
+                    // WPForms stores fields under 'fields' key
+                    $raw_fields = isset( $form_content['fields'] ) ? $form_content['fields']
+                        : ( isset( $form_content['field'] ) ? $form_content['field'] : [] );
+                    foreach ( (array) $raw_fields as $field ) {
+                        if ( ! is_array( $field ) || empty( $field['id'] ) ) continue;
+                        $schema_fields[ (string) $field['id'] ] = [
+                            'label'    => sanitize_text_field( $field['label'] ?? '' ),
+                            'type'     => $field['type'] ?? '',
+                            'required' => ! empty( $field['required'] ),
+                        ];
+                    }
+                }
+
+                $choice_types  = [ 'select', 'radio', 'checkbox', 'payment-select', 'payment-checkbox' ];
+                $choice_fields = [];
+                $req_fields    = [];
+                foreach ( $schema_fields as $fld_id => $fld ) {
+                    if ( in_array( $fld['type'], $choice_types, true ) ) {
+                        $choice_fields[ $fld_id ] = $fld['label'];
+                    }
+                    if ( $fld['required'] ) {
+                        $req_fields[ $fld_id ] = $fld['label'];
+                    }
+                }
+
+                // ── Field-level breakdowns: last 30 days, completed entries ────────
+
+                $field_breakdowns    = [];
+                $abandonment_reasons = [];
+
+                if ( ! empty( $choice_fields ) || ! empty( $req_fields ) ) {
+
+                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                    $completed_entries = $wpdb->get_results(
+                        $wpdb->prepare(
+                            "SELECT fields FROM `{$table}` WHERE form_id = %d AND status NOT IN ('spam','trash','abandoned') AND `date` >= %s ORDER BY entry_id DESC LIMIT 500",
+                            $form_id, $thirty_days_ago
+                        ),
+                        ARRAY_A
+                    );
+
+                    // Tally choice-field values across completed entries
+                    $choice_tally = [];
+                    foreach ( (array) $completed_entries as $entry ) {
+                        if ( empty( $entry['fields'] ) ) continue;
+                        $fdata = json_decode( $entry['fields'], true );
+                        if ( ! is_array( $fdata ) ) continue;
+                        foreach ( $choice_fields as $fld_id => $fld_label ) {
+                            $val = isset( $fdata[ $fld_id ]['value'] ) ? trim( (string) $fdata[ $fld_id ]['value'] ) : '';
+                            if ( $val !== '' ) {
+                                $choice_tally[ $fld_label ][ $val ] = ( $choice_tally[ $fld_label ][ $val ] ?? 0 ) + 1;
+                            }
+                        }
+                    }
+
+                    foreach ( $choice_tally as $fld_label => $vals ) {
+                        arsort( $vals );
+                        $breakdown = [];
+                        foreach ( array_slice( $vals, 0, 20, true ) as $val => $cnt ) {
+                            $breakdown[] = [ 'value' => (string) $val, 'count' => (int) $cnt ];
+                        }
+                        if ( ! empty( $breakdown ) ) {
+                            $field_breakdowns[] = [ 'field' => $fld_label, 'values' => $breakdown ];
+                        }
+                    }
+
+                    // Abandonment reasons: required fields missing in abandoned entries
+                    if ( ! empty( $req_fields ) ) {
+                        // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                        $abandoned_entries = $wpdb->get_results(
+                            $wpdb->prepare(
+                                "SELECT fields FROM `{$table}` WHERE form_id = %d AND status = 'abandoned' AND `date` >= %s ORDER BY entry_id DESC LIMIT 500",
+                                $form_id, $thirty_days_ago
+                            ),
+                            ARRAY_A
+                        );
+
+                        $missing_tally = [];
+                        foreach ( (array) $abandoned_entries as $entry ) {
+                            $fdata = ! empty( $entry['fields'] ) ? json_decode( $entry['fields'], true ) : [];
+                            if ( ! is_array( $fdata ) ) $fdata = [];
+                            foreach ( $req_fields as $req_id => $req_label ) {
+                                $val = isset( $fdata[ $req_id ]['value'] ) ? trim( (string) $fdata[ $req_id ]['value'] ) : '';
+                                if ( $val === '' ) {
+                                    $missing_tally[ $req_label ] = ( $missing_tally[ $req_label ] ?? 0 ) + 1;
+                                }
+                            }
+                        }
+
+                        arsort( $missing_tally );
+                        foreach ( array_slice( $missing_tally, 0, 5, true ) as $label => $cnt ) {
+                            $abandonment_reasons[] = [ 'field' => (string) $label, 'count' => (int) $cnt ];
+                        }
+                    }
+                }
+
+                $result[ $form_id ] = [
+                    'completed_total'     => $completed_total,
+                    'abandoned_total'     => $abandoned_total,
+                    'completed_month'     => $completed_month,
+                    'abandoned_month'     => $abandoned_month,
+                    'completed_last'      => $completed_last,
+                    'abandoned_last'      => $abandoned_last,
+                    'field_breakdowns'    => $field_breakdowns,
+                    'abandonment_reasons' => $abandonment_reasons,
+                ];
+            }
+
+            return $result;
+        }
+
         public function track_submission() {
             // Generic counter incremented by any of the form hooks
             $key   = 'eoh_aforms_submissions';
             $count = (int) get_option($key, 0);
             update_option($key, $count + 1, false);
+        }
+
+        private function collect_wordfence_data() {
+            global $wpdb;
+
+            $wf_config_table = $wpdb->prefix . 'wfConfig';
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+            $table_check = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wf_config_table ) );
+            if ( $table_check !== $wf_config_table ) {
+                return null; // Wordfence not installed
+            }
+
+            $result = [
+                'active'               => true,
+                'waf_enabled'          => false,
+                'waf_learning_mode'    => false,
+                'waf_rules_premium'    => false,
+                'ip_blocklist_enabled' => false,
+                'brute_force_enabled'  => false,
+                'last_scan_time'       => null,
+            ];
+
+            // --- Config ---------------------------------------------------------------
+            $cfg_keys = [ 'firewallEnabled', 'learningModeEnabled', 'isPremium', 'blockListEnabled', 'loginSecEnabled', 'loginSec_enabled', 'wafStatus', 'lastScanCompleted' ];
+            $placeholders = implode( ',', array_fill( 0, count( $cfg_keys ), '%s' ) );
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+            $cfg_rows = $wpdb->get_results(
+                $wpdb->prepare( "SELECT name, val FROM `{$wf_config_table}` WHERE name IN ({$placeholders})", ...$cfg_keys ),
+                ARRAY_A
+            );
+            $cfg = [];
+            foreach ( (array) $cfg_rows as $row ) {
+                $cfg[ $row['name'] ] = $row['val'];
+            }
+            $result['waf_enabled']          = isset( $cfg['firewallEnabled'] ) && $cfg['firewallEnabled'] == '1';
+            $result['waf_learning_mode']    = isset( $cfg['learningModeEnabled'] ) && $cfg['learningModeEnabled'] == '1';
+            $result['waf_rules_premium']    = isset( $cfg['isPremium'] ) && $cfg['isPremium'] == '1';
+            $result['ip_blocklist_enabled'] = isset( $cfg['blockListEnabled'] ) && $cfg['blockListEnabled'] == '1';
+            $result['brute_force_enabled']  = ( isset( $cfg['loginSecEnabled'] ) && $cfg['loginSecEnabled'] == '1' )
+                                           || ( isset( $cfg['loginSec_enabled'] ) && $cfg['loginSec_enabled'] == '1' );
+            if ( ! empty( $cfg['lastScanCompleted'] ) && is_numeric( $cfg['lastScanCompleted'] ) ) {
+                $result['last_scan_time'] = date( 'c', (int) $cfg['lastScanCompleted'] );
+            }
+
+            // --- Attack summary from wfHits -------------------------------------------
+            $hits_table  = $wpdb->prefix . 'wfHits';
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+            $hits_exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $hits_table ) );
+
+            if ( $hits_exists === $hits_table ) {
+                $now        = time();
+                $today_start = (float) strtotime( 'today midnight' );
+                $week_start  = (float) ( $now - 7 * DAY_IN_SECONDS );
+                $month_start = (float) ( $now - 30 * DAY_IN_SECONDS );
+
+                foreach ( [
+                    'attacks_today' => $today_start,
+                    'attacks_week'  => $week_start,
+                    'attacks_month' => $month_start,
+                ] as $key => $since ) {
+                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                    $rows = $wpdb->get_results(
+                        $wpdb->prepare( "SELECT action, COUNT(*) AS cnt FROM `{$hits_table}` WHERE ctime >= %f AND action LIKE 'blocked%%' GROUP BY action", $since ),
+                        ARRAY_A
+                    );
+                    $complex = 0; $brute_force = 0; $blocklist = 0;
+                    foreach ( (array) $rows as $r ) {
+                        $action = strtolower( (string) $r['action'] );
+                        $cnt    = (int) $r['cnt'];
+                        if ( false !== strpos( $action, 'brute' ) || false !== strpos( $action, 'lockout' ) ) {
+                            $brute_force += $cnt;
+                        } elseif ( false !== strpos( $action, 'blocklist' ) || false !== strpos( $action, 'blacklist' ) || false !== strpos( $action, 'ipblack' ) ) {
+                            $blocklist += $cnt;
+                        } else {
+                            $complex += $cnt; // WAF rules, country blocks, manual blocks → "complex"
+                        }
+                    }
+                    $result[ $key ] = [
+                        'complex'     => $complex,
+                        'brute_force' => $brute_force,
+                        'blocklist'   => $blocklist,
+                        'total'       => $complex + $brute_force + $blocklist,
+                    ];
+                }
+
+                // Top blocked IPs — last 7 days
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                $ip_rows = $wpdb->get_results(
+                    $wpdb->prepare(
+                        "SELECT INET6_NTOA(IP) AS ip_str, countryName, COUNT(*) AS block_count FROM `{$hits_table}` WHERE ctime >= %f AND action LIKE 'blocked%%' GROUP BY IP, countryName ORDER BY block_count DESC LIMIT 10",
+                        $week_start
+                    ),
+                    ARRAY_A
+                );
+                $result['top_blocked_ips'] = [];
+                foreach ( (array) $ip_rows as $r ) {
+                    $ip = (string) ( $r['ip_str'] ?? '' );
+                    if ( strpos( $ip, '::ffff:' ) === 0 ) { $ip = substr( $ip, 7 ); }
+                    $result['top_blocked_ips'][] = [
+                        'ip'      => sanitize_text_field( $ip ),
+                        'country' => sanitize_text_field( $r['countryName'] ?? '' ),
+                        'count'   => (int) $r['block_count'],
+                    ];
+                }
+
+                // Top countries — last 7 days
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                $country_rows = $wpdb->get_results(
+                    $wpdb->prepare(
+                        "SELECT countryName, COUNT(*) AS cnt FROM `{$hits_table}` WHERE ctime >= %f AND action LIKE 'blocked%%' AND countryName != '' GROUP BY countryName ORDER BY cnt DESC LIMIT 10",
+                        $week_start
+                    ),
+                    ARRAY_A
+                );
+                $result['top_countries'] = [];
+                foreach ( (array) $country_rows as $r ) {
+                    $result['top_countries'][] = [
+                        'country' => sanitize_text_field( $r['countryName'] ),
+                        'count'   => (int) $r['cnt'],
+                    ];
+                }
+            } else {
+                foreach ( [ 'attacks_today', 'attacks_week', 'attacks_month' ] as $k ) {
+                    $result[ $k ] = [ 'complex' => 0, 'brute_force' => 0, 'blocklist' => 0, 'total' => 0 ];
+                }
+                $result['top_blocked_ips'] = [];
+                $result['top_countries']   = [];
+            }
+
+            // --- Login attempts from wfLogins -----------------------------------------
+            $logins_table  = $wpdb->prefix . 'wfLogins';
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+            $logins_exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $logins_table ) );
+
+            if ( $logins_exists === $logins_table ) {
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                $failed = $wpdb->get_results(
+                    "SELECT username, INET6_NTOA(IP) AS ip_str, ctime FROM `{$logins_table}` WHERE fail = 1 ORDER BY ctime DESC LIMIT 20",
+                    ARRAY_A
+                );
+                $result['login_failed'] = [];
+                foreach ( (array) $failed as $r ) {
+                    $ip = (string) ( $r['ip_str'] ?? '' );
+                    if ( strpos( $ip, '::ffff:' ) === 0 ) { $ip = substr( $ip, 7 ); }
+                    $result['login_failed'][] = [
+                        'username' => sanitize_text_field( $r['username'] ?? '' ),
+                        'ip'       => sanitize_text_field( $ip ),
+                        'time'     => is_numeric( $r['ctime'] ) ? date( 'c', (int) $r['ctime'] ) : '',
+                    ];
+                }
+
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                $success = $wpdb->get_results(
+                    "SELECT username, INET6_NTOA(IP) AS ip_str, ctime FROM `{$logins_table}` WHERE fail = 0 ORDER BY ctime DESC LIMIT 10",
+                    ARRAY_A
+                );
+                $result['login_success'] = [];
+                foreach ( (array) $success as $r ) {
+                    $ip = (string) ( $r['ip_str'] ?? '' );
+                    if ( strpos( $ip, '::ffff:' ) === 0 ) { $ip = substr( $ip, 7 ); }
+                    $result['login_success'][] = [
+                        'username' => sanitize_text_field( $r['username'] ?? '' ),
+                        'ip'       => sanitize_text_field( $ip ),
+                        'time'     => is_numeric( $r['ctime'] ) ? date( 'c', (int) $r['ctime'] ) : '',
+                    ];
+                }
+            } else {
+                $result['login_failed']  = [];
+                $result['login_success'] = [];
+            }
+
+            // --- Scan issues from wfIssues --------------------------------------------
+            $issues_table  = $wpdb->prefix . 'wfIssues';
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+            $issues_exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $issues_table ) );
+
+            if ( $issues_exists === $issues_table ) {
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                $scan_issues = $wpdb->get_results(
+                    "SELECT type, severity, shortMsg FROM `{$issues_table}` WHERE status = 'new' ORDER BY FIELD(severity,'critical','warning','low') LIMIT 20",
+                    ARRAY_A
+                );
+                $result['scan_issues_count'] = count( (array) $scan_issues );
+                $result['scan_issues']       = [];
+                $has_malware                 = false;
+                foreach ( (array) $scan_issues as $si ) {
+                    $type = strtolower( (string) ( $si['type'] ?? '' ) );
+                    if ( false !== strpos( $type, 'file' ) || false !== strpos( $type, 'malware' ) ) {
+                        $has_malware = true;
+                    }
+                    $result['scan_issues'][] = [
+                        'type'        => sanitize_text_field( $si['type']     ?? '' ),
+                        'severity'    => sanitize_text_field( $si['severity'] ?? '' ),
+                        'description' => sanitize_text_field( $si['shortMsg'] ?? '' ),
+                    ];
+                }
+                $result['malware_found'] = $has_malware;
+            } else {
+                $result['scan_issues_count'] = 0;
+                $result['scan_issues']       = [];
+                $result['malware_found']     = false;
+            }
+
+            return $result;
         }
 
         // -------------------------------------------------------------------------
@@ -723,6 +1170,70 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                     ),
                 ]);
             }
+        }
+
+        // -------------------------------------------------------------------------
+        // REST API — allows Eye of Horus dashboard to trigger plugin updates
+        // -------------------------------------------------------------------------
+
+        public function register_rest_routes() {
+            register_rest_route('eye-of-horus/v1', '/update-plugin', [
+                'methods'             => 'POST',
+                'callback'            => [$this, 'rest_update_plugin'],
+                'permission_callback' => '__return_true',
+            ]);
+        }
+
+        public function rest_update_plugin($request) {
+            $settings    = get_option(self::OPTION_NAME, []);
+            $stored_key  = isset($settings['api_key']) ? $settings['api_key'] : '';
+            $provided_key = $request->get_header('X-EOH-KEY');
+
+            if (empty($stored_key) || $provided_key !== $stored_key) {
+                return new WP_Error('unauthorized', __('Invalid API key.', 'eye-of-horus-client'), ['status' => 401]);
+            }
+
+            $plugin_file = sanitize_text_field($request->get_param('plugin_file'));
+
+            if (empty($plugin_file)) {
+                return new WP_Error('missing_param', __('plugin_file is required.', 'eye-of-horus-client'), ['status' => 400]);
+            }
+
+            // Basic path traversal guard
+            if (strpos($plugin_file, '..') !== false || strpos($plugin_file, '/') === false) {
+                return new WP_Error('invalid_param', __('Invalid plugin_file format.', 'eye-of-horus-client'), ['status' => 400]);
+            }
+
+            if (!file_exists(WP_PLUGIN_DIR . '/' . $plugin_file)) {
+                return new WP_Error('not_found', sprintf(__('Plugin not found: %s', 'eye-of-horus-client'), $plugin_file), ['status' => 404]);
+            }
+
+            if (!class_exists('Plugin_Upgrader')) {
+                require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+            }
+            require_once ABSPATH . 'wp-admin/includes/plugin-install.php';
+            require_once ABSPATH . 'wp-admin/includes/file.php';
+            require_once ABSPATH . 'wp-admin/includes/misc.php';
+
+            $skin     = new Automatic_Upgrader_Skin();
+            $upgrader = new Plugin_Upgrader($skin);
+            $result   = $upgrader->upgrade($plugin_file);
+
+            if (is_wp_error($result)) {
+                return new WP_Error('update_failed', $result->get_error_message(), ['status' => 500]);
+            }
+
+            if ($result === false) {
+                $skin_errors = $skin->get_errors();
+                $msg = is_wp_error($skin_errors) ? $skin_errors->get_error_message() : __('Update failed — no result returned.', 'eye-of-horus-client');
+                return new WP_Error('update_failed', $msg, ['status' => 500]);
+            }
+
+            return rest_ensure_response([
+                'ok'          => true,
+                'message'     => __('Plugin updated successfully.', 'eye-of-horus-client'),
+                'plugin_file' => $plugin_file,
+            ]);
         }
     }
 }

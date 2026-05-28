@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation';
 import { PrintButton } from './PrintButton';
-import type { ReportContent, ReportIssue } from '@/lib/reports/types';
+import type { ReportContent, ReportIssue, WPFormStat, WPFormBreakdown, ReportSecurity } from '@/lib/reports/types';
 
 interface ReportPageProps {
   params: Promise<{ token: string }>;
@@ -187,6 +187,215 @@ export default async function PublicReportPage({ params }: ReportPageProps) {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* WPForms Submission Data */}
+      {content.forms.wpforms && content.forms.wpforms.length > 0 && (
+        <div className="report-section print-break">
+          <div className="section-title">Form Performance</div>
+
+          {/* Summary KPIs */}
+          <div className="metric-grid" style={{ marginBottom: 20 }}>
+            <div className="metric-card" style={{ borderTop: '3px solid #22C55E' }}>
+              <div className="metric-label">Completed this month</div>
+              <div className="metric-value" style={{ color: '#22C55E' }}>{(content.forms.totalCompletedThisMonth ?? 0).toLocaleString()}</div>
+              {(content.forms.totalCompletedLastMonth ?? 0) > 0 && (
+                <div className={`metric-delta ${(content.forms.totalCompletedThisMonth ?? 0) >= (content.forms.totalCompletedLastMonth ?? 0) ? 'delta-up' : 'delta-down'}`}>
+                  {(content.forms.totalCompletedThisMonth ?? 0) >= (content.forms.totalCompletedLastMonth ?? 0) ? '▲' : '▼'} {Math.abs((content.forms.totalCompletedThisMonth ?? 0) - (content.forms.totalCompletedLastMonth ?? 0))} vs last month
+                </div>
+              )}
+            </div>
+            <div className="metric-card" style={{ borderTop: '3px solid #F59E0B' }}>
+              <div className="metric-label">Abandoned this month</div>
+              <div className="metric-value" style={{ color: (content.forms.totalAbandonedThisMonth ?? 0) > 0 ? '#F59E0B' : '#22C55E' }}>{(content.forms.totalAbandonedThisMonth ?? 0).toLocaleString()}</div>
+              {((content.forms.totalCompletedThisMonth ?? 0) + (content.forms.totalAbandonedThisMonth ?? 0)) > 0 && (
+                <div className="metric-delta" style={{ color: '#6b7280' }}>
+                  {Math.round(((content.forms.totalAbandonedThisMonth ?? 0) / ((content.forms.totalCompletedThisMonth ?? 0) + (content.forms.totalAbandonedThisMonth ?? 0))) * 100)}% abandonment rate
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Per-form table */}
+          <div style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden', marginBottom: 20 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr', gap: 12, padding: '10px 20px', background: '#f3f4f6', fontSize: 11, fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              <div>Form</div>
+              <div style={{ textAlign: 'right' }}>Completed ✓</div>
+              <div style={{ textAlign: 'right' }}>Abandoned ✗</div>
+              <div style={{ textAlign: 'right' }}>This month</div>
+              <div style={{ textAlign: 'right' }}>Last month</div>
+            </div>
+            {content.forms.wpforms.map((f: WPFormStat, i: number) => {
+              const trend = f.completedMonth - f.completedLast;
+              return (
+                <div key={i} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr', gap: 12, padding: '12px 20px', borderTop: '1px solid #e5e7eb', alignItems: 'center' }}>
+                  <div style={{ fontWeight: 500, color: '#111827', fontSize: 14 }}>{f.name}</div>
+                  <div style={{ textAlign: 'right', fontWeight: 700, color: '#16a34a' }}>{f.completedTotal.toLocaleString()}</div>
+                  <div style={{ textAlign: 'right', color: f.abandonedTotal > 0 ? '#d97706' : '#6b7280' }}>{f.abandonedTotal.toLocaleString()}</div>
+                  <div style={{ textAlign: 'right' }}>{f.completedMonth.toLocaleString()}</div>
+                  <div style={{ textAlign: 'right', color: '#6b7280' }}>
+                    {f.completedLast.toLocaleString()}
+                    {f.completedLast > 0 && (
+                      <span style={{ marginLeft: 6, fontSize: 11, color: trend >= 0 ? '#16a34a' : '#dc2626', fontWeight: 600 }}>
+                        {trend >= 0 ? '▲' : '▼'}{Math.abs(trend)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Abandonment reasons */}
+          {content.forms.abandonmentReasons && content.forms.abandonmentReasons.length > 0 && (
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#374151', marginBottom: 10 }}>Top reasons for abandonment (last 30 days)</div>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                {content.forms.abandonmentReasons.map((r, i) => (
+                  <div key={i} style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '12px 16px', textAlign: 'center', minWidth: 140 }}>
+                    <div style={{ fontSize: 24, fontWeight: 700, color: '#d97706' }}>{r.count}</div>
+                    <div style={{ fontSize: 12, color: '#92400e', marginTop: 4 }}>{r.field} not filled</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Field breakdowns */}
+          {content.forms.fieldBreakdowns && content.forms.fieldBreakdowns.length > 0 && (
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#374151', marginBottom: 10 }}>Field breakdowns (last 30 days · completed entries)</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 16 }}>
+                {content.forms.fieldBreakdowns.map((bd: WPFormBreakdown, bi: number) => {
+                  const maxCount = bd.values[0]?.count ?? 1;
+                  const total = bd.values.reduce((s, v) => s + v.count, 0);
+                  return (
+                    <div key={bi} style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 8, padding: 16 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>{bd.field}</div>
+                      {bd.values.slice(0, 8).map((v, vi) => (
+                        <div key={vi} style={{ marginBottom: 6 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 2 }}>
+                            <span style={{ color: '#374151' }}>{v.value || '(empty)'}</span>
+                            <span style={{ fontWeight: 600, color: '#111827' }}>{v.count} <span style={{ color: '#9ca3af', fontWeight: 400 }}>({Math.round((v.count / total) * 100)}%)</span></span>
+                          </div>
+                          <div style={{ height: 4, background: '#e5e7eb', borderRadius: 2 }}>
+                            <div style={{ height: '100%', width: `${Math.round((v.count / maxCount) * 100)}%`, background: '#3b82f6', borderRadius: 2 }} />
+                          </div>
+                        </div>
+                      ))}
+                      {bd.values.length > 8 && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>+{bd.values.length - 8} more</div>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Security (Wordfence) */}
+      {content.security && (
+        <div className="report-section print-break">
+          <div className="section-title">Security (Wordfence)</div>
+          {(() => {
+            const sec = content.security as ReportSecurity;
+            const attackRows = [
+              { label: 'Today',  d: sec.attacks_today  },
+              { label: 'Week',   d: sec.attacks_week   },
+              { label: 'Month',  d: sec.attacks_month  },
+            ];
+            return (
+              <>
+                {/* Status items */}
+                <div className="metric-grid" style={{ marginBottom: 20 }}>
+                  <div className="metric-card">
+                    <div className="metric-label">WAF</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: sec.waf_enabled ? '#22C55E' : '#EF4444', marginTop: 4 }}>
+                      {sec.waf_enabled ? 'Enabled' : 'Disabled'}
+                    </div>
+                    <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>Web Application Firewall</div>
+                  </div>
+                  <div className="metric-card">
+                    <div className="metric-label">Firewall Rules</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: sec.waf_rules_premium ? '#0D9488' : '#F59E0B', marginTop: 4 }}>
+                      {sec.waf_rules_premium ? 'Premium' : 'Free'}
+                    </div>
+                    <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>{sec.waf_rules_premium ? 'Real-time rule updates' : 'Delayed rule updates'}</div>
+                  </div>
+                  <div className="metric-card">
+                    <div className="metric-label">IP Blocklist</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: sec.ip_blocklist_enabled ? '#22C55E' : '#F59E0B', marginTop: 4 }}>
+                      {sec.ip_blocklist_enabled ? 'Enabled' : 'Disabled'}
+                    </div>
+                    <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>Real-time IP blocklist</div>
+                  </div>
+                  <div className="metric-card">
+                    <div className="metric-label">Brute Force</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: sec.brute_force_enabled ? '#22C55E' : '#F59E0B', marginTop: 4 }}>
+                      {sec.brute_force_enabled ? 'Protected' : 'Disabled'}
+                    </div>
+                    <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>Login brute force protection</div>
+                  </div>
+                </div>
+
+                {/* Attack summary table */}
+                <div style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden', marginBottom: 20 }}>
+                  <div style={{ padding: '10px 20px', background: '#f3f4f6', fontSize: 11, fontWeight: 600, color: '#6b7280', textTransform: 'uppercase' as const, letterSpacing: '0.04em' }}>
+                    Attacks Blocked by Wordfence Firewall
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr 1fr', gap: 8, padding: '8px 20px', fontSize: 11, fontWeight: 700, color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>
+                    <div>Period</div>
+                    <div style={{ textAlign: 'right' as const }}>Complex</div>
+                    <div style={{ textAlign: 'right' as const }}>Brute Force</div>
+                    <div style={{ textAlign: 'right' as const }}>Blocklist</div>
+                    <div style={{ textAlign: 'right' as const }}>Total</div>
+                  </div>
+                  {attackRows.map(({ label, d }) => (
+                    <div key={label} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr 1fr', gap: 8, padding: '10px 20px', borderTop: '1px solid #e5e7eb', fontSize: 13 }}>
+                      <div style={{ fontWeight: 600, color: '#111827' }}>{label}</div>
+                      <div style={{ textAlign: 'right' as const }}>{d.complex.toLocaleString()}</div>
+                      <div style={{ textAlign: 'right' as const }}>{d.brute_force.toLocaleString()}</div>
+                      <div style={{ textAlign: 'right' as const }}>{d.blocklist.toLocaleString()}</div>
+                      <div style={{ textAlign: 'right' as const, fontWeight: 700, color: d.total > 0 ? '#111827' : '#9ca3af' }}>{d.total.toLocaleString()}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Scan issues count */}
+                {sec.scan_issues_count > 0 && (
+                  <div style={{ background: sec.malware_found ? '#fef2f2' : '#fffbeb', border: `1px solid ${sec.malware_found ? '#fecaca' : '#fde68a'}`, borderRadius: 8, padding: '12px 16px', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span style={{ fontSize: 20, fontWeight: 700, color: sec.malware_found ? '#dc2626' : '#d97706' }}>{sec.scan_issues_count}</span>
+                    <span style={{ fontSize: 13, color: sec.malware_found ? '#991b1b' : '#92400e' }}>
+                      {sec.malware_found ? 'Wordfence scan detected malware — immediate action required.' : `Wordfence scan has ${sec.scan_issues_count} open issue${sec.scan_issues_count !== 1 ? 's' : ''} — review recommended.`}
+                    </span>
+                  </div>
+                )}
+
+                {/* Top countries */}
+                {sec.top_countries && sec.top_countries.length > 0 && (
+                  <div style={{ marginBottom: 8 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: '#374151', marginBottom: 10 }}>Top Countries by Attacks — Last 7 Days</div>
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' as const }}>
+                      {sec.top_countries.slice(0, 5).map((c, i) => (
+                        <div key={i} style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 8, padding: '10px 14px', textAlign: 'center' as const, minWidth: 120 }}>
+                          <div style={{ fontSize: 20, fontWeight: 700, color: '#111827' }}>{c.count.toLocaleString()}</div>
+                          <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>{c.country}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Last scan time */}
+                {sec.last_scan_time && (
+                  <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 8 }}>
+                    Last Wordfence scan: {new Date(sec.last_scan_time).toLocaleDateString('en-ZA', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
 

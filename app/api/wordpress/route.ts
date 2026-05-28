@@ -59,7 +59,7 @@ async function syncWordPressFindings(
       risk: "medium" as const,
       priority: "high",
       notes: "Core update available. Apply on staging first, then production.",
-      flag: "Core update",
+      flag: "Needs staging test",
     }] : []),
     ...plugins
       .filter((plugin) => plugin.update_available)
@@ -73,7 +73,7 @@ async function syncWordPressFindings(
           risk,
           priority: risk === "high" ? "high" : "medium",
           notes: `${target} update available. Test compatibility before production update.`,
-          flag: risk === "high" ? "Needs staging test" : "Update available",
+          flag: risk === "high" ? "Needs staging test" : "Safe update",
         };
       }),
     ...themes
@@ -85,24 +85,29 @@ async function syncWordPressFindings(
         risk: "medium" as const,
         priority: "medium",
         notes: "Theme update available. Check visual regressions after update.",
-        flag: "Theme update",
+        flag: "Needs staging test",
       })),
   ];
 
-  await supabase.from("wp_updates").delete().eq("site_id", site.id);
+  const { error: deleteErr } = await supabase.from("wp_updates").delete().eq("site_id", site.id);
+  if (deleteErr) console.error("[EOH] wp_updates delete error:", deleteErr);
 
   if (updates.length > 0) {
-    await supabase.from("wp_updates").insert(updates.map((update) => ({
+    const { error: insertErr } = await supabase.from("wp_updates").insert(updates.map((update) => ({
       id: updateId(site.id, update.target),
       site_id: site.id,
       target: update.target,
-      from: update.from,
-      to: update.to,
+      "from": update.from,
+      "to": update.to,
       risk: update.risk,
       priority: update.priority,
       notes: update.notes,
       flag: update.flag,
     })));
+    if (insertErr) {
+      console.error("[EOH] wp_updates insert error:", insertErr);
+      throw new Error(`wp_updates insert failed: ${insertErr.message}`);
+    }
   }
 
   const { data: existingIssues } = await supabase
