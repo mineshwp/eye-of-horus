@@ -229,13 +229,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const findings = await syncWordPressFindings(supabase, site, payload);
+    let findings: { updatesQueued: number; issuesCreated: number } | undefined;
+    let syncError: string | undefined;
+    try {
+      findings = await syncWordPressFindings(supabase, site, payload);
+    } catch (err) {
+      syncError = err instanceof Error ? err.message : String(err);
+      console.error("[EOH] syncWordPressFindings threw:", syncError);
+    }
 
     return NextResponse.json({
       ok: true,
       message: "Snapshot stored",
       site: site.name,
-      ...findings,
+      updatesQueued: findings?.updatesQueued ?? null,
+      issuesCreated: findings?.issuesCreated ?? null,
+      syncError: syncError ?? null,
       received_at: new Date().toISOString(),
     });
   } catch (err) {
