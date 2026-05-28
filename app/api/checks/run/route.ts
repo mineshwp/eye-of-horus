@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { runSiteCheck, runAllSiteChecks } from "@/lib/checks/index";
+import { runSiteCheck, runAllSiteChecks, runUptimeCheck, runAllUptimeChecks } from "@/lib/checks/index";
 import { getApiUser, unauthorizedResponse } from "@/lib/auth/index";
 
 // Force Node.js runtime — needed for the tls module used in SSL checks
@@ -13,7 +13,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json().catch(() => ({}));
-    const { siteId, runAll } = body as { siteId?: string; runAll?: boolean };
+    const { siteId, runAll, mode = "full" } = body as { siteId?: string; runAll?: boolean; mode?: "full" | "uptime" };
 
     if (!siteId && !runAll) {
       return NextResponse.json(
@@ -23,6 +23,26 @@ export async function POST(request: NextRequest) {
     }
 
     if (runAll) {
+      if (mode === "uptime") {
+        const results = await runAllUptimeChecks();
+        return NextResponse.json({
+          ok: true,
+          mode,
+          total: results.length,
+          up: results.filter((r) => r.uptimeStatus === "up").length,
+          degraded: results.filter((r) => r.uptimeStatus === "degraded").length,
+          down: results.filter((r) => r.uptimeStatus === "down").length,
+          results: results.map((r) => ({
+            siteId: r.siteId,
+            siteName: r.siteName,
+            uptimeStatus: r.uptimeStatus,
+            httpStatus: r.httpCheck.httpStatus,
+            responseTimeMs: r.httpCheck.responseTimeMs,
+            checkedAt: r.checkedAt,
+          })),
+        });
+      }
+
       const results = await runAllSiteChecks();
       const summary = {
         total: results.length,
@@ -46,6 +66,29 @@ export async function POST(request: NextRequest) {
     }
 
     // Single site check
+    if (mode === "uptime") {
+      const result = await runUptimeCheck(siteId!);
+      if (!result) {
+        return NextResponse.json(
+          { error: `Site not found: ${siteId}` },
+          { status: 404 }
+        );
+      }
+
+      return NextResponse.json({
+        ok: true,
+        mode,
+        siteId: result.siteId,
+        siteName: result.siteName,
+        uptimeStatus: result.uptimeStatus,
+        httpStatus: result.httpCheck.httpStatus,
+        responseTimeMs: result.httpCheck.responseTimeMs,
+        persisted: result.persisted,
+        checkedAt: result.checkedAt,
+      });
+    }
+
+    // Single full check
     const result = await runSiteCheck(siteId!);
     if (!result) {
       return NextResponse.json(

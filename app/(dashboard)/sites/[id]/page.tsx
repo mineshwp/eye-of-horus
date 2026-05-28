@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useApp, Site, Issue, WpUpdate } from "@/context/AppContext";
 import { supabase } from "@/lib/supabase";
 import { apiFetch } from "@/lib/auth/index";
+import { DEFAULT_CLARITY_ENDPOINT_URL } from "@/lib/analytics/clarity";
 import {
   Icon,
   Badge,
@@ -97,19 +98,30 @@ export default function SiteDetailPage({ params }: PageProps) {
   // Real uptime history from Supabase
   const [uptimeHistory, setUptimeHistory] = useState<UptimeCheckRow[]>([]);
   const [latestCheck, setLatestCheck] = useState<UptimeCheckRow | null>(null);
+  const [latestSecurityCheck, setLatestSecurityCheck] = useState<UptimeCheckRow | null>(null);
 
   const fetchUptimeHistory = useCallback(async () => {
     if (!site?.id) return;
-    const { data } = await supabase
-      .from("uptime_checks")
-      .select("*")
-      .eq("site_id", site.id)
-      .order("checked_at", { ascending: false })
-      .limit(20);
+    const [{ data }, { data: securityData }] = await Promise.all([
+      supabase
+        .from("uptime_checks")
+        .select("*")
+        .eq("site_id", site.id)
+        .order("checked_at", { ascending: false })
+        .limit(20),
+      supabase
+        .from("uptime_checks")
+        .select("*")
+        .eq("site_id", site.id)
+        .not("ssl_valid", "is", null)
+        .order("checked_at", { ascending: false })
+        .limit(1),
+    ]);
     if (data && data.length > 0) {
       setUptimeHistory(data as UptimeCheckRow[]);
       setLatestCheck(data[0] as UptimeCheckRow);
     }
+    setLatestSecurityCheck(securityData?.[0] as UptimeCheckRow | undefined ?? null);
   }, [site?.id]);
 
   // Latest WordPress plugin snapshot
@@ -123,7 +135,7 @@ export default function SiteDetailPage({ params }: PageProps) {
     ga: Record<string, unknown> | null;
     gsc: Record<string, unknown> | null;
     clarity: Record<string, unknown> | null;
-    integration: { ga_property_id?: string; gsc_site_url?: string; clarity_project_id?: string } | null;
+    integration: { ga_property_id?: string; gsc_site_url?: string; clarity_project_id?: string; clarity_endpoint_url?: string } | null;
     syncStats: {
       ga: { today: number; total: number; lastSyncedAt: string | null };
       gsc: { today: number; total: number; lastSyncedAt: string | null };
@@ -323,6 +335,17 @@ export default function SiteDetailPage({ params }: PageProps) {
     );
   }
 
+  const overviewPerformanceScore = calculatePerformanceOverviewScore(perfMetrics, site.perf);
+  const overviewSecurityScore = calculateSecurityOverviewScore({
+    securityCheck: latestSecurityCheck,
+    domainCheck,
+    wpSnapshot,
+    issues: siteIssues,
+    fallback: site.sec,
+  });
+  const overviewDesktopMetrics = perfMetrics.find((m) => m.device === "desktop") ?? null;
+  const overviewMobileMetrics = perfMetrics.find((m) => m.device === "mobile") ?? null;
+
   return (
     <div className="page fade-in">
       <div className="page-head">
@@ -425,10 +448,18 @@ export default function SiteDetailPage({ params }: PageProps) {
       <div style={{ marginTop: 18 }}>
         {tab === "Overview" && (
           <>
-            <div className="grid-4" style={{ marginBottom: 18 }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+                gap: 14,
+                marginBottom: 18,
+              }}
+            >
               <ScoreCard label="Health" value={site.health} />
-              <ScoreCard label="Performance" value={site.perf} />
-              <ScoreCard label="Security" value={site.sec} />
+              <PageSpeedOverviewCard label="Desktop" metric={overviewDesktopMetrics} />
+              <PageSpeedOverviewCard label="Mobile" metric={overviewMobileMetrics} />
+              <ScoreCard label="Security" value={overviewSecurityScore} />
               <div className="card kpi-card">
                 <div className="kpi-bg" style={{ background: "rgba(34,197,94,0.16)" }} />
                 <div className="kpi-head">
@@ -543,18 +574,18 @@ export default function SiteDetailPage({ params }: PageProps) {
                     </dd>
                     <dt>SSL</dt>
                     <dd>
-                      {latestCheck ? (
-                        latestCheck.ssl_valid ? (
+                      {latestSecurityCheck ? (
+                        latestSecurityCheck.ssl_valid ? (
                           <Badge tone={
-                            (latestCheck.ssl_days_remaining ?? 999) < 7 ? "crit" :
-                            (latestCheck.ssl_days_remaining ?? 999) < 30 ? "high" : "ok"
+                            (latestSecurityCheck.ssl_days_remaining ?? 999) < 7 ? "crit" :
+                            (latestSecurityCheck.ssl_days_remaining ?? 999) < 30 ? "high" : "ok"
                           }>
-                            Valid · {latestCheck.ssl_days_remaining ?? "?"} days remaining
-                            {latestCheck.ssl_expiry_date ? ` · expires ${latestCheck.ssl_expiry_date}` : ""}
+                            Valid · {latestSecurityCheck.ssl_days_remaining ?? "?"} days remaining
+                            {latestSecurityCheck.ssl_expiry_date ? ` · expires ${latestSecurityCheck.ssl_expiry_date}` : ""}
                           </Badge>
                         ) : (
                           <Badge tone="crit">
-                            SSL issue{latestCheck.error ? `: ${latestCheck.error}` : ""}
+                            SSL issue{latestSecurityCheck.error ? `: ${latestSecurityCheck.error}` : ""}
                           </Badge>
                         )
                       ) : (
@@ -578,14 +609,14 @@ export default function SiteDetailPage({ params }: PageProps) {
                   <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
                     <TrendRow
                       label="Performance"
-                      value={site.perf}
+                      value={overviewPerformanceScore}
                       delta="-4"
                       trend={[78, 80, 79, 77, 76, 72, 68, 72, 70, 72, 73, 72, 74, 72]}
                       color="#F59E0B"
                     />
                     <TrendRow
                       label="Security"
-                      value={site.sec}
+                      value={overviewSecurityScore}
                       delta="+2"
                       trend={[80, 82, 83, 82, 84, 85, 84, 86, 85, 86, 87, 86, 87, 86]}
                       color="#22C55E"
@@ -660,8 +691,8 @@ export default function SiteDetailPage({ params }: PageProps) {
                           </div>
                           <div style={{ background: "var(--bg-inset)", borderRadius: 8, padding: "10px 14px" }}>
                             <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 4 }}>SSL</div>
-                            <div style={{ fontFamily: "var(--font-mono)", fontWeight: 600, fontSize: 15, color: latestCheck.ssl_valid ? "var(--green)" : "var(--red)" }}>
-                              {latestCheck.ssl_valid ? `Valid · ${latestCheck.ssl_days_remaining ?? "?"}d` : "Issue"}
+                            <div style={{ fontFamily: "var(--font-mono)", fontWeight: 600, fontSize: 15, color: latestSecurityCheck?.ssl_valid ? "var(--green)" : latestSecurityCheck ? "var(--red)" : "var(--text-tertiary)" }}>
+                              {latestSecurityCheck ? (latestSecurityCheck.ssl_valid ? `Valid · ${latestSecurityCheck.ssl_days_remaining ?? "?"}d` : "Issue") : "No data"}
                             </div>
                           </div>
                           <div style={{ background: "var(--bg-inset)", borderRadius: 8, padding: "10px 14px" }}>
@@ -692,7 +723,7 @@ export default function SiteDetailPage({ params }: PageProps) {
                 <span className="h-sub">last synced per integration</span>
               </div>
               <div>
-                <SyncSource label="Uptime check" icon="clock" lastSync={latestCheck?.checked_at ?? null} connected={true} hasData={!!latestCheck} />
+                <SyncSource label="Uptime check" icon="clock" lastSync={latestCheck?.checked_at ?? null} connected={true} hasData={!!latestCheck} staleAfterMinutes={20} />
                 <SyncSource label="WordPress plugin" icon="wp" lastSync={wpSnapshot?.created_at ?? null} connected={!!wpKeyMasked || !!wpSnapshot} hasData={!!wpSnapshot} />
                 <SyncSource label="Google Analytics" icon="activity" lastSync={(analyticsSnapshot?.ga as Record<string, unknown> | null)?.created_at as string ?? null} connected={!!(analyticsSnapshot?.integration?.ga_property_id)} hasData={!!(analyticsSnapshot?.ga)} />
                 <SyncSource label="Search Console" icon="search" lastSync={(analyticsSnapshot?.gsc as Record<string, unknown> | null)?.created_at as string ?? null} connected={!!(analyticsSnapshot?.integration?.gsc_site_url)} hasData={!!(analyticsSnapshot?.gsc)} />
@@ -784,11 +815,17 @@ export default function SiteDetailPage({ params }: PageProps) {
         )}
 
         {tab === "Performance" && (
-          <PerformanceTab metrics={perfMetrics} uptimeHistory={uptimeHistory} issues={siteIssues} />
+          <PerformanceTab
+            metrics={perfMetrics}
+            uptimeHistory={uptimeHistory}
+            issues={siteIssues}
+            siteId={site.id}
+            onScanComplete={fetchPerfMetrics}
+          />
         )}
 
         {tab === "Security" && (
-          <SecurityTab latestCheck={latestCheck} domainCheck={domainCheck} siteUrl={site.url} issues={siteIssues} wpSnapshot={wpSnapshot} />
+          <SecurityTab latestCheck={latestSecurityCheck} domainCheck={domainCheck} siteUrl={site.url} issues={siteIssues} wpSnapshot={wpSnapshot} />
         )}
 
         {tab === "Forms" && (
@@ -973,6 +1010,85 @@ const DomainCard = ({
   );
 };
 
+function averageScore(values: Array<number | null | undefined>): number | null {
+  const valid = values.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+  if (valid.length === 0) return null;
+  return Math.round(valid.reduce((sum, v) => sum + v, 0) / valid.length);
+}
+
+function calculatePerformanceOverviewScore(metrics: PerfMetricRow[], fallback: number): number {
+  const latest = {
+    desktop: metrics.find((m) => m.device === "desktop"),
+    mobile: metrics.find((m) => m.device === "mobile"),
+    tablet: metrics.find((m) => m.device === "tablet"),
+  };
+  return averageScore([
+    latest.desktop?.performance_score,
+    latest.mobile?.performance_score,
+    latest.tablet?.performance_score,
+  ]) ?? fallback ?? 0;
+}
+
+function calculateSecurityOverviewScore({
+  securityCheck,
+  domainCheck,
+  wpSnapshot,
+  issues,
+  fallback,
+}: {
+  securityCheck: UptimeCheckRow | null;
+  domainCheck: DomainCheckRow | null;
+  wpSnapshot: WpSnapshot | null;
+  issues: Issue[];
+  fallback: number;
+}): number {
+  let hasSecurityData = false;
+  let score = 100;
+
+  if (securityCheck?.ssl_valid != null) {
+    hasSecurityData = true;
+    if (!securityCheck.ssl_valid) {
+      score -= 50;
+    } else if (securityCheck.ssl_days_remaining != null) {
+      if (securityCheck.ssl_days_remaining < 7) score -= 35;
+      else if (securityCheck.ssl_days_remaining < 30) score -= 20;
+      else if (securityCheck.ssl_days_remaining < 60) score -= 10;
+    }
+  }
+
+  if (domainCheck && !domainCheck.error) {
+    hasSecurityData = true;
+    if (domainCheck.days_remaining != null) {
+      if (domainCheck.days_remaining < 7) score -= 35;
+      else if (domainCheck.days_remaining < 30) score -= 20;
+      else if (domainCheck.days_remaining < 60) score -= 10;
+    }
+  }
+
+  const secData = wpSnapshot?.security_data;
+  if (secData) {
+    hasSecurityData = true;
+    if (secData.debug_mode) score -= 20;
+    if ((secData.admin_users ?? 0) > 2) score -= 10;
+    if (!secData.security_plugin) score -= 10;
+    if ((secData.error_log_lines?.length ?? 0) > 0) score -= 10;
+  }
+
+  const securityIssues = issues.filter((i) => i.category?.toLowerCase() === "security" && i.status !== "Resolved");
+  if (securityIssues.length > 0) {
+    hasSecurityData = true;
+    score -= securityIssues.reduce((sum, issue) => {
+      if (issue.severity === "critical") return sum + 30;
+      if (issue.severity === "high") return sum + 20;
+      if (issue.severity === "medium") return sum + 10;
+      return sum + 5;
+    }, 0);
+  }
+
+  if (!hasSecurityData) return fallback ?? 0;
+  return Math.max(0, Math.min(100, score));
+}
+
 const ScoreCard = ({ label, value }: { label: string; value: number }) => {
   const color = value >= 90 ? "#22C55E" : value >= 75 ? "#00E5FF" : value >= 60 ? "#F59E0B" : "#EF4444";
   return (
@@ -994,6 +1110,74 @@ const ScoreCard = ({ label, value }: { label: string; value: number }) => {
             background: color,
             borderRadius: 4,
             boxShadow: `0 0 12px ${color}99`,
+          }}
+        />
+      </div>
+    </div>
+  );
+};
+
+function scoreColor(value: number | null | undefined): string {
+  if (value == null) return "var(--text-tertiary)";
+  if (value >= 90) return "#22C55E";
+  if (value >= 75) return "#00E5FF";
+  if (value >= 60) return "#F59E0B";
+  return "#EF4444";
+}
+
+const PageSpeedOverviewCard = ({
+  label,
+  metric,
+}: {
+  label: "Desktop" | "Mobile";
+  metric: PerfMetricRow | null;
+}) => {
+  const headline = metric?.performance_score;
+  const tone = scoreColor(headline);
+  const scores = [
+    { label: "Performance", value: metric?.performance_score },
+    { label: "Accessibility", value: metric?.accessibility_score },
+    { label: "Best Practices", value: metric?.best_practices_score },
+    { label: "SEO", value: metric?.seo_score },
+  ];
+
+  return (
+    <div className="card kpi-card">
+      <div className="kpi-bg" style={{ background: metric ? `${tone}22` : "rgba(255,255,255,0.04)" }} />
+      <div className="kpi-head">
+        <Icon name={label === "Desktop" ? "monitor" : "smartphone"} size={13} /> {label} Page Speed
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+          gap: 10,
+          marginTop: 14,
+        }}
+      >
+        {scores.map((score) => (
+          <div key={score.label} style={{ minWidth: 0 }}>
+            <div style={{ color: "var(--text-tertiary)", fontSize: 10.5, marginBottom: 4 }}>
+              {score.label}
+            </div>
+            <div style={{ color: scoreColor(score.value), fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 700, lineHeight: 1 }}>
+              {score.value ?? "—"}
+              <span className="unit" style={{ marginLeft: 4 }}>/100</span>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={{ position: "relative", height: 5, borderRadius: 4, background: "rgba(255,255,255,0.06)", marginTop: 14 }}>
+        <div
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: `${headline ?? 0}%`,
+            background: tone,
+            borderRadius: 4,
+            boxShadow: metric ? `0 0 12px ${tone}88` : "none",
           }}
         />
       </div>
@@ -2082,7 +2266,7 @@ const MarketingTab = ({
     ga: Record<string, unknown> | null;
     gsc: Record<string, unknown> | null;
     clarity: Record<string, unknown> | null;
-    integration: { clarity_project_id?: string } | null;
+    integration: { clarity_project_id?: string; clarity_endpoint_url?: string } | null;
   } | null;
 }) => {
   const clarity = snapshot?.clarity?.metrics as Record<string, unknown> | null | undefined;
@@ -2298,13 +2482,17 @@ const SyncSource = ({
   lastSync,
   connected,
   hasData,
+  staleAfterMinutes,
 }: {
   label: string;
   icon: string;
   lastSync: string | null;
   connected: boolean;
   hasData: boolean;
+  staleAfterMinutes?: number;
 }) => {
+  const diffMinutes = lastSync ? Math.floor((Date.now() - new Date(lastSync).getTime()) / 60000) : null;
+  const isStale = hasData && staleAfterMinutes != null && diffMinutes != null && diffMinutes > staleAfterMinutes;
   const fmtAgo = (iso: string) => {
     const diffMs = Date.now() - new Date(iso).getTime();
     const m = Math.floor(diffMs / 60000);
@@ -2315,10 +2503,10 @@ const SyncSource = ({
     if (h < 24) return `${h}h ago`;
     return `${d}d ago`;
   };
-  const dotColor = hasData ? "#22C55E" : connected ? "#F59E0B" : "#5A6578";
-  const dotGlow = hasData ? "0 0 6px #22C55E" : connected ? "0 0 6px #F59E0B" : "none";
+  const dotColor = isStale ? "#F59E0B" : hasData ? "#22C55E" : connected ? "#F59E0B" : "#5A6578";
+  const dotGlow = isStale ? "0 0 6px #F59E0B" : hasData ? "0 0 6px #22C55E" : connected ? "0 0 6px #F59E0B" : "none";
   const subtext = lastSync
-    ? `${fmtAgo(lastSync)} · ${new Date(lastSync).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}`
+    ? `${isStale ? "Stale · " : ""}${fmtAgo(lastSync)} · ${new Date(lastSync).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}`
     : connected
     ? "No data yet — click Re-scan"
     : "Not connected";
@@ -3287,9 +3475,10 @@ interface SyncStats {
 
 /** Small pill showing scan stats for one integration. */
 const SyncStatsPill = ({
-  today, total, lastSyncedAt,
+  today, total, lastSyncedAt, todayUnit = '×',
 }: {
   today: number; total: number; lastSyncedAt: string | null;
+  todayUnit?: string;
 }) => {
   const lastStr = lastSyncedAt
     ? (() => {
@@ -3303,17 +3492,15 @@ const SyncStatsPill = ({
         if (diffH < 24) return `${diffH}h ago`;
         return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
       })()
-    : null;
+    : 'Never';
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 12, color: 'var(--text-secondary)' }}>
-      {lastStr && (
-        <span title={lastSyncedAt ?? undefined}>
-          Last synced: <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{lastStr}</span>
-        </span>
-      )}
+      <span title={lastSyncedAt ? new Date(lastSyncedAt).toLocaleString() : 'No successful sync yet'}>
+        Last sync: <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{lastStr}</span>
+      </span>
       <span>
-        Today: <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{today}×</span>
+        Today: <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{today}{todayUnit}</span>
       </span>
       <span>
         Total: <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{total}</span>
@@ -3328,7 +3515,7 @@ const ClarityBalance = ({ used, limit }: { used: number; limit: number }) => {
   const tone = pct >= 90 ? 'var(--red)' : pct >= 60 ? 'var(--amber)' : 'var(--green)';
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, color: 'var(--text-secondary)', marginTop: 4 }}>
-      <span>Daily calls: <span style={{ color: tone, fontWeight: 600 }}>{used} / {limit}</span></span>
+      <span>Daily API calls: <span style={{ color: tone, fontWeight: 600 }}>{used} / {limit}</span></span>
       <div style={{ flex: 1, maxWidth: 120, height: 4, background: 'var(--bg-inset)', borderRadius: 3, overflow: 'hidden' }}>
         <div style={{ width: `${pct}%`, height: '100%', background: tone, borderRadius: 3, transition: 'width 0.3s' }} />
       </div>
@@ -3354,7 +3541,13 @@ const IntegrationsTab = ({
   onIntegrationSaved?: () => void;
   syncStats: SyncStats | null;
 }) => {
-  const [fields, setFields] = useState({ gaPropertyId: '', gscSiteUrl: '', clarityProjectId: '', clarityApiKey: '' });
+  const [fields, setFields] = useState({
+    gaPropertyId: '',
+    gscSiteUrl: '',
+    clarityProjectId: '',
+    clarityEndpointUrl: DEFAULT_CLARITY_ENDPOINT_URL,
+    clarityApiKey: '',
+  });
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -3379,6 +3572,7 @@ const IntegrationsTab = ({
             gaPropertyId: d.integration.ga_property_id || '',
             gscSiteUrl: d.integration.gsc_site_url || '',
             clarityProjectId: d.integration.clarity_project_id || '',
+            clarityEndpointUrl: d.integration.clarity_endpoint_url || DEFAULT_CLARITY_ENDPOINT_URL,
           }));
         }
         setLoaded(true);
@@ -3397,6 +3591,7 @@ const IntegrationsTab = ({
         gaPropertyId: fields.gaPropertyId || null,
         gscSiteUrl: fields.gscSiteUrl || null,
         clarityProjectId: fields.clarityProjectId || null,
+        clarityEndpointUrl: fields.clarityEndpointUrl || DEFAULT_CLARITY_ENDPOINT_URL,
         clarityApiKey: fields.clarityApiKey || null,
       }),
     }).catch(() => null);
@@ -3596,7 +3791,7 @@ const IntegrationsTab = ({
         {fields.clarityProjectId && syncStats && (
           <div style={{ marginBottom: 14, padding: '10px 14px', background: 'var(--bg-inset)', borderRadius: 8, border: '1px solid var(--border-soft)' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <SyncStatsPill today={syncStats.clarity.today} total={syncStats.clarity.total} lastSyncedAt={syncStats.clarity.lastSyncedAt} />
+              <SyncStatsPill today={syncStats.clarity.today} total={syncStats.clarity.total} lastSyncedAt={syncStats.clarity.lastSyncedAt} todayUnit=" calls" />
               <button
                 className="btn ghost sm"
                 onClick={() => rescan('clarity')}
@@ -3625,6 +3820,19 @@ const IntegrationsTab = ({
             onChange={(e) => setFields((f) => ({ ...f, clarityProjectId: e.target.value }))}
           />
           <div className="muted" style={{ fontSize: 11, marginTop: 5 }}>Found in Clarity → Settings → Overview.</div>
+        </div>
+        <div className="field">
+          <label>Endpoint URL</label>
+          <input
+            type="url"
+            className="input"
+            placeholder={DEFAULT_CLARITY_ENDPOINT_URL}
+            value={fields.clarityEndpointUrl}
+            onChange={(e) => setFields((f) => ({ ...f, clarityEndpointUrl: e.target.value }))}
+          />
+          <div className="muted" style={{ fontSize: 11, marginTop: 5 }}>
+            Microsoft Clarity Data Export API endpoint. Default: <code style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5 }}>{DEFAULT_CLARITY_ENDPOINT_URL}</code>
+          </div>
         </div>
         <div className="field" style={{ marginBottom: 0 }}>
           <label>
@@ -3660,13 +3868,41 @@ const PerformanceTab = ({
   metrics,
   uptimeHistory,
   issues,
+  siteId,
+  onScanComplete,
 }: {
   metrics: PerfMetricRow[];
   uptimeHistory: UptimeCheckRow[];
   issues: Issue[];
+  siteId: string;
+  onScanComplete: () => void;
 }) => {
   const [perfToast, setPerfToast] = useState<string | null>(null);
-  const showPerfToast = (msg: string) => { setPerfToast(msg); setTimeout(() => setPerfToast(null), 3000); };
+  const [scanning, setScanning] = useState(false);
+  const showPerfToast = (msg: string) => { setPerfToast(msg); setTimeout(() => setPerfToast(null), 4000); };
+
+  const runScan = async () => {
+    setScanning(true);
+    showPerfToast("Running Page Speed scan — this takes 15–30 seconds…");
+    try {
+      const res = await apiFetch("/api/performance/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ siteId }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        showPerfToast(`Scan complete — Desktop ${data.desktop?.performance ?? "—"}, Mobile ${data.mobile?.performance ?? "—"}`);
+        onScanComplete();
+      } else {
+        showPerfToast(data.error ?? "Scan failed — check PAGESPEED_API_KEY is set");
+      }
+    } catch {
+      showPerfToast("Network error — scan failed");
+    } finally {
+      setScanning(false);
+    }
+  };
 
   const latest = {
     desktop: metrics.find((m) => m.device === "desktop"),
@@ -3716,7 +3952,7 @@ const PerformanceTab = ({
             <div className="card-head">
               <h3 style={{ textTransform: "capitalize" }}>
                 <Icon name={device === "desktop" ? "monitor" : device === "mobile" ? "smartphone" : "tablet"} size={14} />
-                {" "}{device} — Lighthouse
+                {" "}{device} — Page Speed
               </h3>
               {m && <span className="h-sub">{new Date(m.created_at).toLocaleDateString()}</span>}
             </div>
@@ -3749,7 +3985,7 @@ const PerformanceTab = ({
                 </div>
               </>
             ) : (
-              <div className="empty" style={{ padding: "28px 18px" }}>No {device} data yet. Run a scan to collect Lighthouse metrics.</div>
+              <div className="empty" style={{ padding: "28px 18px" }}>No {device} data yet. Click <strong>Run Page Speed scan</strong> below.</div>
             )}
           </div>
         );
@@ -3804,14 +4040,25 @@ const PerformanceTab = ({
       {metrics.length === 0 && avgResponse == null && (
         <div className="card">
           <div className="empty" style={{ padding: "40px 18px" }}>
-            No performance data yet. Run a scan to collect Lighthouse and response time metrics.
+            No Page Speed data yet. Click <strong>Run scan</strong> to collect Lighthouse scores via Google PageSpeed Insights.
           </div>
         </div>
       )}
 
-      <button className="btn" style={{ alignSelf: "flex-start" }} onClick={() => { window.print(); showPerfToast("Printing performance report…"); }} type="button">
-        <Icon name="download" size={13} /> Export report
-      </button>
+      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <button
+          className="btn primary"
+          onClick={runScan}
+          disabled={scanning}
+          type="button"
+        >
+          <Icon name="refresh" size={13} />
+          {scanning ? "Scanning…" : "Run Page Speed scan"}
+        </button>
+        <button className="btn" onClick={() => { window.print(); showPerfToast("Printing performance report…"); }} type="button">
+          <Icon name="download" size={13} /> Export report
+        </button>
+      </div>
       {perfToast && (
         <div style={{ position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)", background: "var(--bg-card)", border: "1px solid var(--border-soft)", borderRadius: 10, padding: "10px 20px", fontSize: 13, fontWeight: 500, color: "var(--text-primary)", boxShadow: "0 4px 24px rgba(0,0,0,0.5)", zIndex: 9999, pointerEvents: "none" }}>{perfToast}</div>
       )}

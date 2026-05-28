@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS site_integrations (
   gsc_site_url text,
   clarity_project_id text,
   clarity_api_key text,
+  clarity_endpoint_url text DEFAULT 'https://www.clarity.ms/export-data/api/v1/project-live-insights',
   updated_at timestamptz DEFAULT now()
 );
 

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { fetchGAMetrics } from '@/lib/analytics/google-analytics';
 import { fetchGSCMetrics } from '@/lib/analytics/search-console';
-import { fetchClarityMetrics } from '@/lib/analytics/clarity';
+import { ClarityApiError, DEFAULT_CLARITY_ENDPOINT_URL, fetchClarityMetrics } from '@/lib/analytics/clarity';
 import { getApiUser, unauthorizedResponse } from '@/lib/auth/index';
 
 export const runtime = 'nodejs';
@@ -13,7 +13,7 @@ export async function POST(request: NextRequest) {
   if (!user) return unauthorizedResponse();
 
   const body = await request.json().catch(() => ({}));
-  const { siteId } = body as { siteId?: string };
+  const { siteId, includeClarity = false } = body as { siteId?: string; includeClarity?: boolean };
 
   if (!siteId) {
     return NextResponse.json({ error: 'siteId required' }, { status: 400 });
@@ -80,18 +80,30 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Clarity
-  if (integration?.clarity_project_id && integration?.clarity_api_key) {
-    const clarityData = await fetchClarityMetrics(integration.clarity_project_id, integration.clarity_api_key);
-    if (clarityData) {
-      await supabase.from('clarity_snapshots').insert({
-        site_id: siteId,
-        period_start: startDate,
-        period_end: endDate,
-        metrics: clarityData,
-        insights: [],
-      });
-      results.clarity = true;
+  // Clarity is intentionally excluded from this broad refresh by default.
+  // Use /api/analytics/sync-one with source="clarity" so quota tracking is applied.
+  if (includeClarity && integration?.clarity_project_id && integration?.clarity_api_key) {
+    try {
+      const clarityData = await fetchClarityMetrics(
+        integration.clarity_project_id,
+        integration.clarity_api_key,
+        integration.clarity_endpoint_url || DEFAULT_CLARITY_ENDPOINT_URL,
+      );
+      if (clarityData) {
+        await supabase.from('clarity_snapshots').insert({
+          site_id: siteId,
+          period_start: startDate,
+          period_end: endDate,
+          metrics: clarityData,
+          insights: [],
+        });
+        results.clarity = true;
+      }
+    } catch (err) {
+      if (err instanceof ClarityApiError && err.status === 429) {
+        return NextResponse.json({ ok: false, results, error: err.message }, { status: 429 });
+      }
+      throw err;
     }
   }
 

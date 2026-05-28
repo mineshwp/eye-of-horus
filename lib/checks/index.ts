@@ -43,6 +43,16 @@ interface SiteRow {
   open_issues: number;
 }
 
+export interface UptimeCheckResult {
+  siteId: string;
+  siteName: string;
+  siteUrl: string;
+  httpCheck: HttpCheckResult;
+  uptimeStatus: "up" | "down" | "degraded";
+  persisted: boolean;
+  checkedAt: string;
+}
+
 // ─── Scoring ─────────────────────────────────────────────────────────────────
 
 function calcHealthScore(
@@ -183,6 +193,29 @@ function calcHealthScore(
   };
 }
 
+function calcSecurityScore(
+  ssl: SslCheckResult,
+  domain: DomainCheckResult,
+): number {
+  let score = 100;
+
+  if (!ssl.valid) {
+    score -= 50;
+  } else if (ssl.daysRemaining !== null) {
+    if (ssl.daysRemaining < 7) score -= 35;
+    else if (ssl.daysRemaining < 30) score -= 20;
+    else if (ssl.daysRemaining < 60) score -= 10;
+  }
+
+  if (domain.daysRemaining !== null) {
+    if (domain.daysRemaining < 7) score -= 35;
+    else if (domain.daysRemaining < 30) score -= 20;
+    else if (domain.daysRemaining < 60) score -= 10;
+  }
+
+  return Math.max(0, Math.min(100, score));
+}
+
 // ─── Main: run all checks for one site ───────────────────────────────────────
 
 export async function runSiteCheck(siteId: string): Promise<SiteCheckResult | null> {
@@ -269,6 +302,7 @@ export async function runSiteCheck(siteId: string): Promise<SiteCheckResult | nu
 
     await supabase.from("sites").update({
       health: healthScore,
+      sec: calcSecurityScore(sslCheck, domainCheck),
       status,
       uptime: parseFloat(newUptime.toFixed(4)),
       last_scan: new Date().toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }) + " today",
@@ -351,6 +385,116 @@ export async function runSiteCheck(siteId: string): Promise<SiteCheckResult | nu
   };
 }
 
+// ─── Uptime-only: cheap 15-minute monitor ────────────────────────────────────
+
+export async function runUptimeCheck(siteId: string): Promise<UptimeCheckResult | null> {
+  const supabase = getServerClient();
+
+  let site: SiteRow | null = null;
+  if (supabase) {
+    const { data, error } = await supabase
+      .from("sites")
+      .select("id, name, url, health, uptime, open_issues")
+      .eq("id", siteId)
+      .single();
+    if (error || !data) {
+      console.error("Site not found:", siteId, error?.message);
+      return null;
+    }
+    site = data as SiteRow;
+  } else {
+    site = { id: siteId, name: siteId, url: `https://${siteId}.co.za`, health: 80, uptime: 99.9, open_issues: 0 };
+  }
+
+  const rawUrl = site.url.startsWith("http") ? site.url : `https://${site.url}`;
+  const checkedAt = new Date().toISOString();
+  const httpCheck = await runHttpCheck(rawUrl);
+  const uptimeStatus: "up" | "down" | "degraded" =
+    !httpCheck.isUp ? "down" :
+    httpCheck.responseTimeMs > 3_000 ? "degraded" : "up";
+  let persisted = false;
+
+  if (supabase) {
+    await supabase.from("uptime_checks").insert([{
+      site_id: siteId,
+      status: uptimeStatus,
+      http_status: httpCheck.httpStatus,
+      response_time_ms: httpCheck.responseTimeMs,
+      error: httpCheck.error,
+      checked_at: checkedAt,
+    }]);
+
+    const newUptime = !httpCheck.isUp
+      ? Math.max(0, (site.uptime ?? 99.99) - 0.01)
+      : site.uptime ?? 99.99;
+    const health = !httpCheck.isUp
+      ? Math.min(site.health ?? 100, 50)
+      : httpCheck.responseTimeMs > 3_000
+        ? Math.min(site.health ?? 100, 75)
+        : site.health;
+    const status = !httpCheck.isUp ? "critical" : httpCheck.responseTimeMs > 3_000 ? "attention" : site.health >= 90 ? "healthy" : site.health >= 70 ? "attention" : "critical";
+
+    await supabase.from("sites").update({
+      health,
+      status,
+      uptime: parseFloat(newUptime.toFixed(4)),
+      last_scan: new Date().toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }) + " today",
+    }).eq("id", siteId);
+
+    if (!httpCheck.isUp || httpCheck.httpStatus && httpCheck.httpStatus >= 500) {
+      const title = !httpCheck.isUp
+        ? `Site is down — ${httpCheck.error ?? `HTTP ${httpCheck.httpStatus}`}`
+        : `HTTP ${httpCheck.httpStatus} error on homepage`;
+      const { data: existing } = await supabase
+        .from("issues")
+        .select("id")
+        .eq("site_id", siteId)
+        .eq("category", "Uptime")
+        .in("status", ["New", "Investigating", "In Progress"])
+        .limit(1);
+
+      if (!existing || existing.length === 0) {
+        await supabase.from("issues").insert([{
+          id: `up-${randomUUID().slice(0, 8)}`,
+          site_id: siteId,
+          title,
+          severity: "critical",
+          impact: "Website availability affected",
+          category: "Uptime",
+          page: "/",
+          recommended: "Check hosting, DNS, CDN, and server logs immediately.",
+          owner: "Unassigned",
+          status: "New",
+          detected: new Date().toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }),
+          change_type: "Automated uptime check",
+          confidence: 98,
+          evidence: { httpStatus: httpCheck.httpStatus, responseTimeMs: httpCheck.responseTimeMs, error: httpCheck.error },
+        }]);
+      }
+
+      await supabase.from("activities").insert([{
+        time: new Date().toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }),
+        site_name: site.name,
+        text: title,
+        sev: "crit",
+        type: "uptime",
+      }]);
+    }
+
+    persisted = true;
+  }
+
+  return {
+    siteId,
+    siteName: site.name,
+    siteUrl: rawUrl,
+    httpCheck,
+    uptimeStatus,
+    persisted,
+    checkedAt,
+  };
+}
+
 // ─── Run checks for all sites ─────────────────────────────────────────────────
 
 export async function runAllSiteChecks(): Promise<SiteCheckResult[]> {
@@ -371,6 +515,28 @@ export async function runAllSiteChecks(): Promise<SiteCheckResult[]> {
     const batch = siteIds.slice(i, i + 3);
     const batchResults = await Promise.all(batch.map((id) => runSiteCheck(id)));
     results.push(...(batchResults.filter(Boolean) as SiteCheckResult[]));
+  }
+
+  return results;
+}
+
+export async function runAllUptimeChecks(): Promise<UptimeCheckResult[]> {
+  const supabase = getServerClient();
+  if (!supabase) {
+    console.warn("Supabase not configured — cannot run uptime checks");
+    return [];
+  }
+
+  const { data: sites, error } = await supabase.from("sites").select("id");
+  if (error || !sites) return [];
+
+  const siteIds: string[] = sites.map((s: any) => s.id);
+  const results: UptimeCheckResult[] = [];
+
+  for (let i = 0; i < siteIds.length; i += 5) {
+    const batch = siteIds.slice(i, i + 5);
+    const batchResults = await Promise.all(batch.map((id) => runUptimeCheck(id)));
+    results.push(...(batchResults.filter(Boolean) as UptimeCheckResult[]));
   }
 
   return results;

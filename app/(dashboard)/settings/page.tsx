@@ -327,8 +327,8 @@ export default function SettingsPage() {
             </div>
             <div className="card-pad">
               <SettingRow
-                title="Scan frequency"
-                desc="How often Horus checks each monitored page."
+                title="Uptime frequency"
+                desc="How often Horus checks whether each monitored site is reachable. Deeper QA and analytics run daily."
                 control={
                   <select className="select" value={scanFreq} onChange={(e) => setScanFreq(e.target.value)}>
                     <option value="Every 5 minutes">Every 5 minutes</option>
@@ -389,7 +389,7 @@ export default function SettingsPage() {
                 title="Daily sync time"
                 desc={
                   <>
-                    Horus syncs Google Analytics, Search Console, and Microsoft Clarity once per day at this time{' '}
+                    Horus syncs Google Analytics and Search Console once per day at this time. Microsoft Clarity auto-sync runs at most once per site per day{' '}
                     <strong>(UTC)</strong>. The cron job fires at 2:00 UTC by default — update{' '}
                     <code style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5 }}>vercel.json</code> to match if you change this.
                   </>
@@ -435,7 +435,7 @@ export default function SettingsPage() {
                 }
               />
               <div style={{ padding: '10px 0 2px', fontSize: 12, color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
-                <strong style={{ color: 'var(--text-secondary)' }}>Clarity daily limit:</strong> Each site has a configurable daily call limit (default 10) to avoid burning through your Clarity API quota. You can adjust this per site in the site&apos;s Integration tab.
+                <strong style={{ color: 'var(--text-secondary)' }}>Clarity daily limit:</strong> Auto-sync runs once per site per day. Manual Clarity syncs use the remaining daily API-call quota, tracked in the site&apos;s Integration tab.
               </div>
             </div>
           </div>
@@ -469,8 +469,8 @@ export default function SettingsPage() {
                 control={<Toggle on={toggles.sec} onClick={() => flip("sec")} />}
               />
               <SettingRow
-                title="Performance budgets"
-                desc="LCP, CLS, INP thresholds per page template."
+                title="Page Speed (Lighthouse)"
+                desc="Daily Google PageSpeed Insights scores — desktop + mobile per site."
                 control={<Toggle on={toggles.perf} onClick={() => flip("perf")} />}
               />
               <SettingRow

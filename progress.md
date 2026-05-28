@@ -1,6 +1,42 @@
 # Eye of Horus — Progress Log
 
 ## Latest Update
+**2026-05-28 — Cron schedule split, Clarity endpoint support, and sync visibility.**
+
+### What was done this session
+
+#### Cron schedule behaviour
+- Added `app/api/cron/uptime/route.ts` for the lightweight 15-minute monitor.
+- Updated `vercel.json` so only `/api/cron/uptime` runs every 15 minutes.
+- Kept `/api/cron/daily` at `0 2 * * *` UTC for full site checks, PageSpeed, Google Analytics, Search Console, and Microsoft Clarity.
+- Fixed Vercel cron compatibility by allowing `GET` to execute the protected cron handlers for uptime, daily, and monthly routes.
+
+#### Uptime-only checks
+- Added `runUptimeCheck()` and `runAllUptimeChecks()` in `lib/checks/index.ts`.
+- The 15-minute uptime job only performs HTTP reachability checks and writes `uptime_checks`; it does not run SSL, SEO, domain, PageSpeed, GA, GSC, or Clarity.
+- Updated `POST /api/checks/run` to support `mode: "uptime"` for manual uptime-only runs while preserving the default full scan behaviour.
+
+#### Microsoft Clarity
+- Added configurable Clarity endpoint URL support, backed by `supabase/migrations/20260528100000_clarity_endpoint_url.sql`.
+- Clarity sync now uses the saved endpoint URL, handles Microsoft 429 daily-limit responses clearly, and counts the two API calls used per sync.
+- Clarity auto-sync is limited to once per site per UTC day. Manual syncs use the remaining daily API-call quota.
+- The Integrations page now shows Last sync information so the team can avoid unnecessary manual syncs.
+
+#### Settings UI
+- Renamed "Scan frequency" to "Uptime frequency" to make clear that the 15-minute cadence is only for availability checks.
+- Updated Analytics auto-sync copy to clarify that GA, GSC, and Clarity run daily, with Clarity limited to once per site per day.
+
+### Verification
+- `npm run build` passes cleanly across 40 app routes.
+- Direct Clarity API testing confirmed the saved project ID, API key, and endpoint are being used; Microsoft returned `429 Exceeded daily limit`, which means credentials/endpoint are wired but the current daily quota was exhausted.
+- PageSpeed Insights key check returned `200 OK`, and Supabase confirmed `performance_metrics.tti` is available.
+- Fixed PageSpeed category requests so Accessibility, Best Practices, and SEO are requested and stored instead of showing as zero. Tablet rows now use the desktop PSI result because Google PSI only supports `desktop` and `mobile` strategies.
+- Fixed site overview rollups: Performance now derives from the latest PageSpeed rows and PageSpeed scans update `sites.perf`; Security now derives from the latest SSL/domain/WordPress security data and full scans update `sites.sec`.
+- Updated the site overview top cards to keep Health, Security, and Uptime while adding separate Desktop and Mobile Page Speed cards showing Performance, Accessibility, Best Practices, and SEO.
+- Fixed WordPress plugin update ingestion: future plugin syncs now create `wp_updates` queue rows, WordPress update issues, site WordPress rollup counts, open issue counts, and activity entries. Also made Uptime data source turn stale when the 15-minute check has not refreshed within 20 minutes.
+
+---
+
 **2026-05-27 — Analytics auto-sync schedule, per-integration rescan buttons, and sync stats UI.**
 
 ### What was done this session

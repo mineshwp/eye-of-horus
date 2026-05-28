@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS public.performance_metrics (
     cls                 NUMERIC, -- Cumulative Layout Shift (score)
     inp                 NUMERIC, -- Interaction to Next Paint (ms)
     fcp                 NUMERIC, -- First Contentful Paint (seconds)
+    tti                 NUMERIC, -- Time to Interactive (seconds)
     ttfb                NUMERIC, -- Time to First Byte (seconds)
     raw_result          JSONB,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()

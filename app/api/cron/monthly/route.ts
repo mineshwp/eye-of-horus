@@ -185,22 +185,8 @@ export async function POST(request: NextRequest) {
   });
 }
 
-// ── GET: health check ─────────────────────────────────────────────────────────
 export async function GET(request: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET;
-  const authHeader = request.headers.get("Authorization");
-  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
-
-  if (cronSecret && token !== cronSecret) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  return NextResponse.json({
-    ok: true,
-    service: "Eye of Horus Monthly Report Cron",
-    schedule: "30 0 1 * * (00:30 UTC on the 1st of each month)",
-    nextRun: "Configure in vercel.json or external scheduler",
-  });
+  return POST(request);
 }
 
 // ── Email template helpers ────────────────────────────────────────────────────

@@ -17,6 +17,22 @@ export interface ClarityMetrics {
   fetchedAt: string;
 }
 
+export const DEFAULT_CLARITY_ENDPOINT_URL =
+  'https://www.clarity.ms/export-data/api/v1/project-live-insights';
+
+// fetchClarityMetrics performs one aggregate request and one URL-dimension request.
+export const CLARITY_API_CALLS_PER_SYNC = 2;
+
+export class ClarityApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ClarityApiError';
+    this.status = status;
+  }
+}
+
 // Clarity Data Export API
 // Docs: https://learn.microsoft.com/en-us/clarity/setup-and-installation/clarity-data-export-api
 // Endpoint: GET https://www.clarity.ms/export-data/api/v1/project-live-insights
@@ -24,12 +40,11 @@ export interface ClarityMetrics {
 // Limit:    10 requests per project per day — be conservative
 
 async function clarityFetch(
-  projectId: string,
+  endpointUrl: string,
   token: string,
   extraParams: Record<string, string> = {},
 ): Promise<unknown> {
-  const url = new URL('https://www.clarity.ms/export-data/api/v1/project-live-insights');
-  url.searchParams.set('projectId', projectId);
+  const url = new URL(endpointUrl || DEFAULT_CLARITY_ENDPOINT_URL);
   url.searchParams.set('numOfDays', '1');
   for (const [k, v] of Object.entries(extraParams)) url.searchParams.set(k, v);
 
@@ -40,7 +55,11 @@ async function clarityFetch(
   if (!res.ok) {
     const body = await res.text();
     console.error(`[clarity] API ${res.status}: ${body.slice(0, 300)}`);
-    return null;
+    const message =
+      res.status === 429
+        ? 'Microsoft Clarity daily API limit reached. Try again tomorrow.'
+        : body || `Microsoft Clarity API returned ${res.status}`;
+    throw new ClarityApiError(res.status, message);
   }
   const data = await res.json();
   // Log raw response once so we can see real field names
@@ -74,16 +93,17 @@ function normalise(raw: unknown): Record<string, unknown> | null {
 export async function fetchClarityMetrics(
   projectId: string,
   apiKey: string,
+  endpointUrl: string = DEFAULT_CLARITY_ENDPOINT_URL,
 ): Promise<ClarityMetrics | null> {
   if (!projectId || !apiKey) return null;
   try {
     // Site-level aggregate (1 of 10 daily calls)
-    const raw = await clarityFetch(projectId, apiKey);
+    const raw = await clarityFetch(endpointUrl, apiKey);
     const data = normalise(raw);
     if (!data) return null;
 
     // Per-page breakdown (2 of 10 daily calls)
-    const pageRaw = await clarityFetch(projectId, apiKey, { dimension1: 'url' });
+    const pageRaw = await clarityFetch(endpointUrl, apiKey, { dimension1: 'URL' });
     const popularPages: Array<{ url: string; sessions: number; scrollDepth: number }> = [];
 
     if (pageRaw) {

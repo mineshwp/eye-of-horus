@@ -16,7 +16,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { fetchGAMetrics } from "@/lib/analytics/google-analytics";
 import { fetchGSCMetrics } from "@/lib/analytics/search-console";
-import { fetchClarityMetrics } from "@/lib/analytics/clarity";
+import { CLARITY_API_CALLS_PER_SYNC, ClarityApiError, DEFAULT_CLARITY_ENDPOINT_URL, fetchClarityMetrics } from "@/lib/analytics/clarity";
 import { getApiUser, unauthorizedResponse } from "@/lib/auth/index";
 
 export const runtime = "nodejs";
@@ -80,10 +80,10 @@ export async function POST(request: NextRequest) {
   if (source === "clarity") {
     const limit: number = integration.clarity_daily_limit ?? 10;
     const usedToday: number = needsReset ? 0 : (integration.clarity_sync_count_today ?? 0);
-    if (usedToday >= limit) {
+    if (usedToday + CLARITY_API_CALLS_PER_SYNC > limit) {
       return NextResponse.json(
         {
-          error: `Clarity daily limit reached (${limit} syncs/day). Try again tomorrow.`,
+          error: `Clarity daily API limit reached (${usedToday}/${limit} calls used). Try again tomorrow.`,
           usedToday,
           limit,
         },
@@ -160,7 +160,8 @@ export async function POST(request: NextRequest) {
     } else if (source === "clarity") {
       const clarityData = await fetchClarityMetrics(
         integration.clarity_project_id,
-        integration.clarity_api_key
+        integration.clarity_api_key,
+        integration.clarity_endpoint_url || DEFAULT_CLARITY_ENDPOINT_URL
       );
       if (clarityData) {
         await supabase.from("clarity_snapshots").insert({
@@ -176,17 +177,29 @@ export async function POST(request: NextRequest) {
       }
     }
   } catch (err: unknown) {
-    errorMessage =
-      err instanceof Error ? err.message : "Unexpected error during sync";
+    if (err instanceof ClarityApiError && err.status === 429) {
+      return NextResponse.json(
+        {
+          ok: false,
+          source,
+          error: err.message,
+          usedToday: needsReset ? 0 : (integration.clarity_sync_count_today ?? 0),
+          limit: integration.clarity_daily_limit ?? 10,
+        },
+        { status: 429 }
+      );
+    }
+    errorMessage = err instanceof Error ? err.message : "Unexpected error during sync";
   }
 
   // ── Update counters ───────────────────────────────────────────────────────
   if (synced) {
     const totalPrev: number = integration[`${source}_sync_count_total`] ?? 0;
+    const increment = source === "clarity" ? CLARITY_API_CALLS_PER_SYNC : 1;
     const updates: Record<string, unknown> = {
       sync_counts_date: today,
-      [`${source}_sync_count_today`]: todayBase + 1,
-      [`${source}_sync_count_total`]: totalPrev + 1,
+      [`${source}_sync_count_today`]: todayBase + increment,
+      [`${source}_sync_count_total`]: totalPrev + increment,
       [`${source}_last_synced_at`]: now.toISOString(),
       updated_at: now.toISOString(),
     };
@@ -214,8 +227,9 @@ export async function POST(request: NextRequest) {
   }
 
   // Build response with fresh counter values
-  const freshTodayCount = todayBase + 1;
-  const freshTotalCount = (integration[`${source}_sync_count_total`] ?? 0) + 1;
+  const increment = source === "clarity" ? CLARITY_API_CALLS_PER_SYNC : 1;
+  const freshTodayCount = todayBase + increment;
+  const freshTotalCount = (integration[`${source}_sync_count_total`] ?? 0) + increment;
 
   return NextResponse.json({
     ok: true,

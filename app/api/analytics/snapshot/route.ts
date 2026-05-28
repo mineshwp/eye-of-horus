@@ -43,6 +43,7 @@ export async function GET(request: NextRequest) {
       .from('site_integrations')
       .select(`
         ga_property_id, gsc_site_url, clarity_project_id,
+        clarity_endpoint_url,
         ga_sync_count_today, ga_sync_count_total, ga_last_synced_at,
         gsc_sync_count_today, gsc_sync_count_total, gsc_last_synced_at,
         clarity_sync_count_today, clarity_sync_count_total, clarity_last_synced_at,

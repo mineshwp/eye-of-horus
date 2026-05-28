@@ -348,6 +348,7 @@ CREATE TABLE IF NOT EXISTS public.performance_metrics (
     cls                 NUMERIC, -- Cumulative Layout Shift (score)
     inp                 NUMERIC, -- Interaction to Next Paint (ms)
     fcp                 NUMERIC, -- First Contentful Paint (seconds)
+    tti                 NUMERIC, -- Time to Interactive (seconds)
     ttfb                NUMERIC, -- Time to First Byte (seconds)
     raw_result          JSONB,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -612,6 +613,7 @@ CREATE TABLE IF NOT EXISTS site_integrations (
   gsc_site_url text,
   clarity_project_id text,
   clarity_api_key text,
+  clarity_endpoint_url text DEFAULT 'https://www.clarity.ms/export-data/api/v1/project-live-insights',
   updated_at timestamptz DEFAULT now()
 );
 
@@ -832,5 +834,3 @@ CREATE POLICY "Service role full access to domain checks"
   TO service_role
   USING (true)
   WITH CHECK (true);
-
-

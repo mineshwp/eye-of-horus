@@ -4,7 +4,8 @@ import { runAllSiteChecks } from "@/lib/checks/index";
 import { fireAlertsForCheckResults } from "@/lib/notifications/alerts";
 import { fetchGAMetrics } from "@/lib/analytics/google-analytics";
 import { fetchGSCMetrics } from "@/lib/analytics/search-console";
-import { fetchClarityMetrics } from "@/lib/analytics/clarity";
+import { CLARITY_API_CALLS_PER_SYNC, ClarityApiError, DEFAULT_CLARITY_ENDPOINT_URL, fetchClarityMetrics } from "@/lib/analytics/clarity";
+import { fetchPageSpeedInsights } from "@/lib/performance/pagespeed";
 
 // Force Node.js runtime — needed for SSL check tls module
 export const runtime = "nodejs";
@@ -170,25 +171,43 @@ export async function POST(request: NextRequest) {
               } catch { analyticsSyncResult.errors++; }
             }
 
-            // Clarity — respect daily limit
+            // Clarity — auto-sync at most once per UTC day per site.
+            // One sync performs two Microsoft API requests: aggregate + URL dimension.
             if (integ.clarity_project_id && integ.clarity_api_key) {
               const limit: number = integ.clarity_daily_limit ?? 10;
               const usedToday: number = needsReset ? 0 : (integ.clarity_sync_count_today ?? 0);
-              if (usedToday < limit) {
+              const lastClaritySync = typeof integ.clarity_last_synced_at === "string" ? integ.clarity_last_synced_at : "";
+              const alreadySyncedToday = !needsReset && (usedToday > 0 || lastClaritySync.startsWith(today));
+
+              if (alreadySyncedToday) {
+                console.log(`[cron/daily] Clarity already auto-synced for site ${siteId} today — skipping`);
+                analyticsSyncResult.skipped++;
+              } else if (usedToday + CLARITY_API_CALLS_PER_SYNC <= limit) {
                 try {
-                  const clarityData = await fetchClarityMetrics(integ.clarity_project_id, integ.clarity_api_key);
+                  const clarityData = await fetchClarityMetrics(
+                    integ.clarity_project_id,
+                    integ.clarity_api_key,
+                    integ.clarity_endpoint_url || DEFAULT_CLARITY_ENDPOINT_URL,
+                  );
                   if (clarityData) {
                     await supabase.from("clarity_snapshots").insert({ site_id: siteId, period_start: startDate, period_end: endDate, metrics: clarityData, insights: [] });
                     counterUpdates.clarity_last_synced_at = now.toISOString();
-                    counterUpdates.clarity_sync_count_today = usedToday + 1;
-                    counterUpdates.clarity_sync_count_total = (integ.clarity_sync_count_total ?? 0) + 1;
+                    counterUpdates.clarity_sync_count_today = usedToday + CLARITY_API_CALLS_PER_SYNC;
+                    counterUpdates.clarity_sync_count_total = (integ.clarity_sync_count_total ?? 0) + CLARITY_API_CALLS_PER_SYNC;
                     analyticsSyncResult.synced++;
                   } else {
                     analyticsSyncResult.skipped++;
                   }
-                } catch { analyticsSyncResult.errors++; }
+                } catch (err) {
+                  if (err instanceof ClarityApiError && err.status === 429) {
+                    console.log(`[cron/daily] Microsoft Clarity API limit reached for site ${siteId} — skipping`);
+                    analyticsSyncResult.skipped++;
+                  } else {
+                    analyticsSyncResult.errors++;
+                  }
+                }
               } else {
-                console.log(`[cron/daily] Clarity daily limit reached for site ${siteId} — skipping`);
+                console.log(`[cron/daily] Clarity daily API limit would be exceeded for site ${siteId} — skipping`);
                 analyticsSyncResult.skipped++;
               }
             }
@@ -203,6 +222,54 @@ export async function POST(request: NextRequest) {
         }
       } catch (analyticsErr: unknown) {
         console.error("[cron/daily] Analytics sync failed:", analyticsErr);
+      }
+    }
+
+    // ── PageSpeed Insights sync ──────────────────────────────────────────────
+    // Runs desktop + mobile PSI for every site. Two API calls per site per day.
+    // At 25,000 free calls/day with an API key this comfortably handles 100+ sites.
+    let psiSyncResult: { synced: number; skipped: number; errors: number } = { synced: 0, skipped: 0, errors: 0 };
+
+    if (supabase) {
+      try {
+        const { data: sites } = await supabase.from("sites").select("id, url").eq("status", "active");
+
+        for (const site of sites ?? []) {
+          if (!site.url) { psiSyncResult.skipped++; continue; }
+
+          try {
+            const [desktop, mobile] = await Promise.all([
+              fetchPageSpeedInsights(site.url, "desktop"),
+              fetchPageSpeedInsights(site.url, "mobile"),
+            ]);
+
+            const rows = [];
+            if (desktop) {
+              rows.push({ site_id: site.id, device: "desktop", performance_score: desktop.performance_score, accessibility_score: desktop.accessibility_score, seo_score: desktop.seo_score, best_practices_score: desktop.best_practices_score, lcp: desktop.lcp, cls: desktop.cls, inp: desktop.inp, fcp: desktop.fcp, tti: desktop.tti, raw_result: desktop.raw_result });
+              rows.push({ site_id: site.id, device: "tablet", performance_score: desktop.performance_score, accessibility_score: desktop.accessibility_score, seo_score: desktop.seo_score, best_practices_score: desktop.best_practices_score, lcp: desktop.lcp, cls: desktop.cls, inp: desktop.inp, fcp: desktop.fcp, tti: desktop.tti, raw_result: desktop.raw_result });
+            }
+            if (mobile) rows.push({ site_id: site.id, device: "mobile", performance_score: mobile.performance_score, accessibility_score: mobile.accessibility_score, seo_score: mobile.seo_score, best_practices_score: mobile.best_practices_score, lcp: mobile.lcp, cls: mobile.cls, inp: mobile.inp, fcp: mobile.fcp, tti: mobile.tti, raw_result: mobile.raw_result });
+
+            if (rows.length > 0) {
+              await supabase.from("performance_metrics").insert(rows);
+              const perfScores = [desktop?.performance_score, mobile?.performance_score]
+                .filter((score): score is number => typeof score === "number" && Number.isFinite(score));
+              if (perfScores.length > 0) {
+                const perf = Math.round(perfScores.reduce((sum, score) => sum + score, 0) / perfScores.length);
+                await supabase.from("sites").update({ perf }).eq("id", site.id);
+              }
+              psiSyncResult.synced += rows.length;
+            } else {
+              psiSyncResult.errors++;
+            }
+          } catch {
+            psiSyncResult.errors++;
+          }
+        }
+
+        console.log(`[cron/daily] PSI sync complete — synced: ${psiSyncResult.synced}, skipped: ${psiSyncResult.skipped}, errors: ${psiSyncResult.errors}`);
+      } catch (psiErr) {
+        console.error("[cron/daily] PSI sync failed:", psiErr);
       }
     }
 
@@ -221,6 +288,7 @@ export async function POST(request: NextRequest) {
         alertWhatsappSent: totalWhatsappSent,
       },
       analyticsSync: analyticsSyncResult,
+      psiSync: psiSyncResult,
       sites: results.map((r) => ({
         siteId: r.siteId,
         siteName: r.siteName,
@@ -239,20 +307,6 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// Allow Vercel to call this as a GET for health checks
 export async function GET(request: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET;
-  const authHeader = request.headers.get("Authorization");
-  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
-
-  if (!cronSecret || token !== cronSecret) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  return NextResponse.json({
-    ok: true,
-    service: "Eye of Horus Daily Cron",
-    schedule: "0 4 * * * (04:00 SAST / 02:00 UTC)",
-    nextRun: "Configure in vercel.json or external scheduler",
-  });
+  return POST(request);
 }
