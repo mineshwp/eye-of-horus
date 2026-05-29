@@ -1,0 +1,14 @@
+import { createClient } from '@supabase/supabase-js';
+import fs from 'fs';
+const env = Object.fromEntries(fs.readFileSync('.env.local','utf8').split('\n').filter(l=>l.includes('=')).map(l=>{const i=l.indexOf('=');return [l.slice(0,i).trim(), l.slice(i+1).trim()];}));
+const sb = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {auth:{persistSession:false}});
+const { data: sites } = await sb.from('sites').select('id,name').ilike('name','%SADV%');
+console.log('SITES:', JSON.stringify(sites));
+const sid = sites?.[0]?.id;
+const { data: wpu } = await sb.from('wp_updates').select('*').eq('site_id', sid);
+console.log('WP_UPDATES count:', wpu?.length, JSON.stringify(wpu));
+const { data: iss } = await sb.from('issues').select('id,title,category,status').eq('site_id', sid);
+console.log('ISSUES:', JSON.stringify(iss));
+const { data: snap } = await sb.from('wordpress_snapshots').select('id,created_at,plugin_data,update_data').eq('site_id', sid).order('created_at',{ascending:false}).limit(1);
+console.log('LATEST SNAPSHOT update_data:', JSON.stringify(snap?.[0]?.update_data));
+console.log('PLUGIN_DATA:', JSON.stringify(snap?.[0]?.plugin_data));
