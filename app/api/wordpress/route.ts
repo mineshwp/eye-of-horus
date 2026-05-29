@@ -39,7 +39,7 @@ function updateRisk(target: string): "low" | "medium" | "high" {
   return "low";
 }
 
-async function syncWordPressFindings(
+export async function syncWordPressFindings(
   supabase: ReturnType<typeof getServerClient>,
   site: { id: string; name: string },
   payload: Record<string, unknown>,

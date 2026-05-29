@@ -153,6 +153,40 @@ Never commit `.env.local` or any file containing real credentials.
 
 ---
 
+## Watchtower (Playwright) Setup
+
+Playwright runs in **GitHub Actions**, not on Vercel. The pipeline writes screenshots,
+baselines, and diffs to a private Supabase Storage bucket called `watchtower-artifacts`
+and inserts results into the `playwright_checks`, `form_checks`, and `issues` tables.
+
+### One-time setup
+
+1. **Database** — Apply the latest migrations: `supabase db push`. The
+   `20260529100000_playwright_test_config.sql` migration adds `sites.test_config`
+   and `playwright_checks.page_path`.
+2. **Storage bucket** — Create a **private** bucket called `watchtower-artifacts`.
+   The runner uploads with the service role key and writes 1-year signed URLs into
+   `playwright_checks.screenshot_url` / `baseline_url` / `diff_url`.
+3. **GitHub repo secrets** (Settings → Secrets and variables → Actions):
+   - `NEXT_PUBLIC_SUPABASE_URL`
+   - `SUPABASE_SERVICE_ROLE_KEY`
+4. **In-app "Re-scan now"** — Set these on Vercel (and in `.env.local` for local testing):
+   - `GITHUB_REPO`   e.g. `wetpaint/eye-of-horus-2point0`
+   - `GITHUB_TOKEN`  PAT with `actions: write` on the repo
+   - `GITHUB_REF`    optional, defaults to `main`
+
+### Running locally
+
+```bash
+npm run check:playwright
+```
+
+Requires `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in `.env.local`.
+Set `TEST_FORM_SUBMISSIONS=true` to enable form fill+submit testing (off by default
+because submissions trigger real client emails).
+
+---
+
 ## Security
 
 - Supabase Row Level Security (RLS) is enabled on all tables

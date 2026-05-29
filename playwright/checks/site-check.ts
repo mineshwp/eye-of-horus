@@ -8,8 +8,16 @@ export interface SiteCheckInput {
   id: string;
   url: string;
   name: string;
+  /** Page path being checked (e.g. "/", "/about"). Used to keep per-page baselines separate. */
+  pagePath?: string;
   /** When true, the runner will attempt to fill and submit contact forms. Default false. */
   testFormSubmissions?: boolean;
+}
+
+/** Slugify a page path into a filesystem/storage-safe segment. */
+export function pagePathSlug(pagePath: string): string {
+  const slug = pagePath.replace(/^https?:\/\/[^/]+/, "").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase();
+  return slug || "home";
 }
 
 export interface FormFound {
@@ -34,6 +42,7 @@ export interface SiteCheckResult {
   siteId: string;
   device: string;
   url: string;
+  pagePath: string;
   status: 'pass' | 'fail' | 'error';
   httpStatus: number | null;
   loadTimeMs: number | null;
@@ -201,13 +210,14 @@ export async function checkSite(
       status = 'fail';
     }
 
-    // Screenshot
-    const screenshotDir = path.join(SCREENSHOT_BASE, site.id, device.name);
+    // Screenshot — namespaced by page so multi-page baselines don't collide
+    const slug = pagePathSlug(site.pagePath ?? "/");
+    const screenshotDir = path.join(SCREENSHOT_BASE, site.id, slug, device.name);
     fs.mkdirSync(screenshotDir, { recursive: true });
 
     const screenshotFilename = `check_${Date.now()}.png`;
     screenshotPath = path.join(screenshotDir, screenshotFilename);
-    screenshotUrl = `/playwright-data/${site.id}/${device.name}/${screenshotFilename}`;
+    screenshotUrl = `/playwright-data/${site.id}/${slug}/${device.name}/${screenshotFilename}`;
 
     await page.screenshot({
       path: screenshotPath,
@@ -217,7 +227,7 @@ export async function checkSite(
 
     // Visual regression comparison
     baselinePath = path.join(screenshotDir, 'baseline.png');
-    baselineUrl = `/playwright-data/${site.id}/${device.name}/baseline.png`;
+    baselineUrl = `/playwright-data/${site.id}/${slug}/${device.name}/baseline.png`;
 
     if (fs.existsSync(baselinePath)) {
       const diffFilename = `diff_${Date.now()}.png`;
@@ -232,7 +242,7 @@ export async function checkSite(
 
       diffPercentage = diff.diffPercentage;
       diffPath = diffFilePath;
-      diffUrl = `/playwright-data/${site.id}/${device.name}/${diffFilename}`;
+      diffUrl = `/playwright-data/${site.id}/${slug}/${device.name}/${diffFilename}`;
       regressionDetected = !diff.matched;
 
       if (regressionDetected) {
@@ -396,6 +406,7 @@ export async function checkSite(
     siteId: site.id,
     device: device.name,
     url: site.url,
+    pagePath: site.pagePath ?? "/",
     status,
     httpStatus,
     loadTimeMs,

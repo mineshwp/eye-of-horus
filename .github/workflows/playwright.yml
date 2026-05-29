@@ -1,0 +1,43 @@
+name: Watchtower Playwright Checks
+
+on:
+  # Scheduled daily run at 02:00 UTC.
+  schedule:
+    - cron: "0 2 * * *"
+  # Manual / API-triggered run. Accepts optional inputs for future per-site runs.
+  workflow_dispatch:
+    inputs:
+      site_id:
+        description: "Optional site id to scan (currently the runner scans all sites)"
+        required: false
+        type: string
+      test_forms:
+        description: "Fill and submit configured forms (may send real emails)"
+        required: false
+        default: "false"
+        type: string
+
+jobs:
+  watchtower:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      TEST_FORM_SUBMISSIONS: ${{ github.event.inputs.test_forms || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browser (chromium)
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Watchtower checks
+        run: npm run check:playwright

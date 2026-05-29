@@ -6,6 +6,7 @@ import { useApp, Site, Issue, WpUpdate } from "@/context/AppContext";
 import { supabase } from "@/lib/supabase";
 import { apiFetch } from "@/lib/auth/index";
 import { DEFAULT_CLARITY_ENDPOINT_URL } from "@/lib/analytics/clarity";
+import WatchtowerConfig from "@/components/WatchtowerConfig";
 import {
   Icon,
   Badge,
@@ -365,6 +366,7 @@ export default function SiteDetailPage({ params }: PageProps) {
     return valid.includes(t) ? t : "Overview";
   });
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [configOpen, setConfigOpen] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -476,7 +478,7 @@ export default function SiteDetailPage({ params }: PageProps) {
           <a href={site.url} target="_blank" rel="noopener noreferrer" className="btn text-decoration-none" style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
             <Icon name="link" size={13} /> Open site
           </a>
-          <button className="btn" onClick={() => router.push("/settings")}>
+          <button className="btn" onClick={() => setConfigOpen(true)}>
             <Icon name="settings" size={13} /> Configure
           </button>
           <button className="btn" onClick={() => setChatOpen(true)} type="button">
@@ -485,6 +487,29 @@ export default function SiteDetailPage({ params }: PageProps) {
           <button
             className="btn primary"
             onClick={async () => {
+              // Re-derive WordPress findings (wp_updates + issues) from the latest
+              // stored snapshot. The standard scan only runs Playwright/uptime, so
+              // without this WordPress updates never become issues from the UI.
+              try {
+                const res = await apiFetch("/api/wordpress/reconcile", {
+                  method: "POST",
+                  body: JSON.stringify({ siteId: site.id }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || data.ok === false) {
+                  console.error("[EOH] WordPress reconcile error:", data.detail || data.error);
+                }
+              } catch (e) {
+                console.error("[EOH] WordPress reconcile request failed:", e);
+              }
+              // Best-effort: trigger the Playwright/visual scan in CI. Safe to ignore if not configured.
+              try {
+                const pw = await apiFetch("/api/playwright/run", { method: "POST", body: JSON.stringify({ testForms: false }) });
+                const pwData = await pw.json().catch(() => ({}));
+                if (!pw.ok) console.info("[EOH] Playwright run not triggered:", pwData.error);
+              } catch (e) {
+                console.info("[EOH] Playwright run trigger skipped:", e);
+              }
               await runScan(site.id);
               await Promise.all([
                 fetchUptimeHistory(),
@@ -507,6 +532,10 @@ export default function SiteDetailPage({ params }: PageProps) {
         active={tab}
         onChange={setTab}
       />
+
+      {configOpen && (
+        <WatchtowerConfig siteId={site.id} siteName={site.name} onClose={() => setConfigOpen(false)} />
+      )}
 
       <div style={{ marginTop: 18 }}>
         {tab === "Overview" && (
@@ -1806,12 +1835,14 @@ const AnalyticsTab = ({
     ga: Record<string, unknown> | null;
     gsc: Record<string, unknown> | null;
     clarity: Record<string, unknown> | null;
-    integration: { ga_property_id?: string } | null;
+    integration: { ga_property_id?: string; clarity_project_id?: string } | null;
   } | null;
   onRefresh?: () => void;
   refreshing?: boolean;
 }) => {
   const [range, setRange] = useState("Last 28 days");
+  const clarity = snapshot?.clarity?.metrics as Record<string, unknown> | null | undefined;
+  const clarityConnected = !!(snapshot?.integration?.clarity_project_id);
   const [analyticsToast, setAnalyticsToast] = useState<string | null>(null);
   const showAnalyticsToast = (msg: string) => { setAnalyticsToast(msg); setTimeout(() => setAnalyticsToast(null), 3000); };
   const isConnected = !!(snapshot?.integration?.ga_property_id);
@@ -2001,6 +2032,41 @@ const AnalyticsTab = ({
           )}
         </>
       )}
+
+      {/* Microsoft Clarity UX signals */}
+      {clarityConnected && clarity && (
+        <div className="card" style={{ marginTop: 18 }}>
+          <div className="card-head">
+            <h3><Icon name="eye" size={14} /> Microsoft Clarity · UX signals</h3>
+            <Badge tone="ok" dot>Live</Badge>
+          </div>
+          <div className="card-pad" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 12 }}>
+            {[
+              { label: "Rage clicks", value: String(clarity.rageClicks ?? 0), bad: Number(clarity.rageClicks ?? 0) > 10 },
+              { label: "Dead clicks", value: String(clarity.deadClicks ?? 0), bad: Number(clarity.deadClicks ?? 0) > 50 },
+              { label: "Quick backs", value: String(clarity.quickBacks ?? 0), bad: Number(clarity.quickBacks ?? 0) > 20 },
+              { label: "Excessive scrolls", value: String(clarity.excessiveScrolls ?? 0), bad: Number(clarity.excessiveScrolls ?? 0) > 30 },
+              { label: "JS errors", value: String(clarity.jsErrors ?? 0), bad: Number(clarity.jsErrors ?? 0) > 0 },
+              { label: "Scroll depth", value: `${clarity.scrollDepth ?? 0}%`, bad: false },
+            ].map(({ label, value, bad }) => (
+              <div key={label} style={{ background: "var(--surface-2)", borderRadius: 8, padding: "10px 14px" }}>
+                <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 4 }}>{label}</div>
+                <div style={{ fontSize: 20, fontWeight: 600, color: bad ? "#EF4444" : "var(--text-primary)" }}>{value}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {!clarityConnected && (
+        <div className="card" style={{ marginTop: 18, padding: "14px 18px", display: "flex", gap: 14, alignItems: "center", background: "rgba(139,92,246,0.05)", border: "1px solid rgba(139,92,246,0.2)" }}>
+          <Icon name="eye" size={16} style={{ color: "#8B5CF6" }} />
+          <div>
+            <div style={{ fontWeight: 500, marginBottom: 2 }}>Microsoft Clarity not connected</div>
+            <div className="muted" style={{ fontSize: 12 }}>Add your Clarity Project ID and API key via site integrations to see rage clicks, dead clicks, and scroll depth data.</div>
+          </div>
+        </div>
+      )}
+
       {analyticsToast && (
         <div style={{ position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)", background: "var(--bg-card)", border: "1px solid var(--border-soft)", borderRadius: 10, padding: "10px 20px", fontSize: 13, fontWeight: 500, color: "var(--text-primary)", boxShadow: "0 4px 24px rgba(0,0,0,0.5)", zIndex: 9999, pointerEvents: "none" }}>{analyticsToast}</div>
       )}
@@ -2333,13 +2399,8 @@ const MarketingTab = ({
   snapshot?: {
     ga: Record<string, unknown> | null;
     gsc: Record<string, unknown> | null;
-    clarity: Record<string, unknown> | null;
-    integration: { clarity_project_id?: string; clarity_endpoint_url?: string } | null;
   } | null;
 }) => {
-  const clarity = snapshot?.clarity?.metrics as Record<string, unknown> | null | undefined;
-  const clarityConnected = !!(snapshot?.integration?.clarity_project_id);
-
   const [strategy, setStrategy] = useState<string | null>(null);
   const [strategyLoading, setStrategyLoading] = useState(false);
   const [blogIdeas, setBlogIdeas] = useState<string | null>(null);
@@ -2504,40 +2565,6 @@ const MarketingTab = ({
           )}
         </div>
       </div>
-
-      {/* Microsoft Clarity UX signals */}
-      {clarityConnected && clarity && (
-        <div className="card" style={{ marginTop: 18 }}>
-          <div className="card-head">
-            <h3><Icon name="eye" size={14} /> Microsoft Clarity · UX signals</h3>
-            <Badge tone="ok" dot>Live</Badge>
-          </div>
-          <div className="card-pad" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 12 }}>
-            {[
-              { label: "Rage clicks", value: String(clarity.rageClicks ?? 0), bad: Number(clarity.rageClicks ?? 0) > 10 },
-              { label: "Dead clicks", value: String(clarity.deadClicks ?? 0), bad: Number(clarity.deadClicks ?? 0) > 50 },
-              { label: "Quick backs", value: String(clarity.quickBacks ?? 0), bad: Number(clarity.quickBacks ?? 0) > 20 },
-              { label: "Excessive scrolls", value: String(clarity.excessiveScrolls ?? 0), bad: Number(clarity.excessiveScrolls ?? 0) > 30 },
-              { label: "JS errors", value: String(clarity.jsErrors ?? 0), bad: Number(clarity.jsErrors ?? 0) > 0 },
-              { label: "Scroll depth", value: `${clarity.scrollDepth ?? 0}%`, bad: false },
-            ].map(({ label, value, bad }) => (
-              <div key={label} style={{ background: "var(--surface-2)", borderRadius: 8, padding: "10px 14px" }}>
-                <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 4 }}>{label}</div>
-                <div style={{ fontSize: 20, fontWeight: 600, color: bad ? "#EF4444" : "var(--text-primary)" }}>{value}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-      {!clarityConnected && (
-        <div className="card" style={{ marginTop: 18, padding: "14px 18px", display: "flex", gap: 14, alignItems: "center", background: "rgba(139,92,246,0.05)", border: "1px solid rgba(139,92,246,0.2)" }}>
-          <Icon name="eye" size={16} style={{ color: "#8B5CF6" }} />
-          <div>
-            <div style={{ fontWeight: 500, marginBottom: 2 }}>Microsoft Clarity not connected</div>
-            <div className="muted" style={{ fontSize: 12 }}>Add your Clarity Project ID and API key via site integrations to see rage clicks, dead clicks, and scroll depth data.</div>
-          </div>
-        </div>
-      )}
     </>
   );
 };
@@ -4819,10 +4846,10 @@ const VisualChangesChangeRow = ({
 );
 
 const VisualComparisonPane = ({
-  label, subtitle, viewport, siteUrl, mode, hasRegression,
+  label, subtitle, viewport, siteUrl, mode, hasRegression, imageUrl,
 }: {
   label: string; subtitle: string; viewport: string;
-  siteUrl: string; mode: "baseline" | "current"; hasRegression?: boolean;
+  siteUrl: string; mode: "baseline" | "current"; hasRegression?: boolean; imageUrl?: string | null;
 }) => {
   const isMobile = viewport === "Mobile";
   const isTablet = viewport === "Tablet";
@@ -4837,6 +4864,12 @@ const VisualComparisonPane = ({
           <Icon name={isMobile ? "mobile" : isTablet ? "tablet" : "desktop"} size={11} /> {viewport}
         </Badge>
       </div>
+      {imageUrl ? (
+        <div style={{ border: hasRegression ? "2px solid var(--red)" : "1px solid var(--border-soft)", borderRadius: 10, overflow: "hidden", background: "#0b0b0b" }}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={imageUrl} alt={`${label} screenshot`} style={{ width: "100%", display: "block", maxHeight: isMobile ? 560 : 460, objectFit: "contain" }} />
+        </div>
+      ) : (
       <div
         className={`viewport-mock ${isTablet ? "tablet" : ""} ${isMobile ? "mobile" : ""}`}
         style={{ height: isMobile ? 480 : 420 }}
@@ -4871,9 +4904,24 @@ const VisualComparisonPane = ({
           </div>
         )}
       </div>
+      )}
     </div>
   );
 };
+
+interface PwCheck {
+  id: string;
+  device: string;
+  url: string;
+  page_path: string | null;
+  status: string;
+  screenshot_url: string | null;
+  baseline_url: string | null;
+  diff_url: string | null;
+  diff_percentage: number | null;
+  regression_detected: boolean;
+  checked_at: string;
+}
 
 function VisualChangesTab({ site, issues }: { site: Site; issues: Issue[] }) {
   const router = useRouter();
@@ -4881,11 +4929,55 @@ function VisualChangesTab({ site, issues }: { site: Site; issues: Issue[] }) {
   const [toast, setToast] = useState<string | null>(null);
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
 
+  const [checks, setChecks] = useState<PwCheck[]>([]);
+  const [loadingChecks, setLoadingChecks] = useState(true);
+  const [selectedPath, setSelectedPath] = useState<string>("/");
+
+  useEffect(() => {
+    let active = true;
+    setLoadingChecks(true);
+    apiFetch(`/api/playwright/checks?siteId=${site.id}&limit=60`)
+      .then((r) => r.json())
+      .then((data: { checks?: PwCheck[] }) => {
+        if (!active) return;
+        setChecks(data.checks ?? []);
+      })
+      .catch(() => {})
+      .finally(() => active && setLoadingChecks(false));
+    return () => { active = false; };
+  }, [site.id]);
+
+  const device = viewport.toLowerCase(); // desktop | tablet | mobile
+  // Distinct page paths seen in results.
+  const pagePaths = Array.from(new Set(checks.map((c) => c.page_path || "/")));
+  const effectivePath = pagePaths.includes(selectedPath) ? selectedPath : (pagePaths[0] ?? "/");
+  // Latest check for the selected page + viewport.
+  const latest = checks
+    .filter((c) => (c.page_path || "/") === effectivePath && c.device === device)
+    .sort((a, b) => new Date(b.checked_at).getTime() - new Date(a.checked_at).getTime())[0] ?? null;
+
   const regressionIssues = issues.filter(
     (i) => i.category === "Visual regression" && i.status !== "Resolved" && i.status !== "Ignored"
   );
+  const hasRegression = latest?.regression_detected ?? regressionIssues.length > 0;
 
-  const handleApprove = () => showToast(`Baseline approved for ${site.name} · ${viewport}.`);
+  const handleApprove = async () => {
+    if (latest?.screenshot_url) {
+      try {
+        const res = await apiFetch("/api/playwright/baseline", {
+          method: "POST",
+          body: JSON.stringify({
+            siteId: site.id,
+            device,
+            pagePath: effectivePath,
+            screenshotUrl: latest.screenshot_url,
+          }),
+        });
+        if (res.ok) { showToast(`New baseline set for ${effectivePath} · ${viewport}.`); return; }
+      } catch { /* fall through */ }
+    }
+    showToast(`Baseline approved for ${site.name} · ${viewport}.`);
+  };
 
   const handleFlag = () => {
     if (regressionIssues.length > 0) {
@@ -4922,12 +5014,35 @@ function VisualChangesTab({ site, issues }: { site: Site; issues: Issue[] }) {
         </div>
       </div>
 
-      {/* Viewport selector */}
-      <div className="card" style={{ marginBottom: 18, padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10 }}>
-        <span className="label-strip">Viewport</span>
-        <Tabs tabs={["Desktop", "Tablet", "Mobile"]} active={viewport} onChange={setViewport} />
+      {/* Page + viewport selector */}
+      <div className="card" style={{ marginBottom: 18, padding: "14px 18px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        {pagePaths.length > 0 && (
+          <>
+            <span className="label-strip">Page</span>
+            <select className="select" value={effectivePath} onChange={(e) => setSelectedPath(e.target.value)} style={{ fontSize: 13 }}>
+              {pagePaths.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </>
+        )}
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+          <span className="label-strip">Viewport</span>
+          <Tabs tabs={["Desktop", "Tablet", "Mobile"]} active={viewport} onChange={setViewport} />
+        </div>
       </div>
 
+      {loadingChecks ? (
+        <div className="card" style={{ marginBottom: 18 }}><div className="empty" style={{ padding: "40px 10px" }}>Loading scan results…</div></div>
+      ) : checks.length === 0 ? (
+        <div className="card" style={{ marginBottom: 18 }}>
+          <div className="empty" style={{ padding: "40px 16px", textAlign: "center" }}>
+            No Playwright scans recorded yet for this site.<br />
+            Configure pages via <strong>Configure</strong>, then run a scan (Re-scan now or the scheduled job) to capture baselines and comparisons.
+          </div>
+        </div>
+      ) : !latest ? (
+        <div className="card" style={{ marginBottom: 18 }}><div className="empty" style={{ padding: "40px 10px" }}>No scan for {effectivePath} on {viewport.toLowerCase()} yet.</div></div>
+      ) : (
+      <>
       {/* Comparison panes */}
       <div className="grid-2eq" style={{ marginBottom: 18, alignItems: "start" }}>
         <VisualComparisonPane
@@ -4936,16 +5051,33 @@ function VisualChangesTab({ site, issues }: { site: Site; issues: Issue[] }) {
           viewport={viewport}
           siteUrl={site.url}
           mode="baseline"
+          imageUrl={latest.baseline_url}
         />
         <VisualComparisonPane
           label="Current"
-          subtitle={`Latest scan · ${site.lastScan ?? "—"}`}
+          subtitle={`Latest scan · ${new Date(latest.checked_at).toLocaleString()}`}
           viewport={viewport}
           siteUrl={site.url}
           mode="current"
-          hasRegression={regressionIssues.length > 0}
+          hasRegression={hasRegression}
+          imageUrl={latest.screenshot_url}
         />
       </div>
+
+      {latest.diff_url && hasRegression && (
+        <div className="card" style={{ marginBottom: 18 }}>
+          <div className="card-head">
+            <h3><Icon name="diff" size={14} /> Pixel diff</h3>
+            <span className="h-sub">{latest.diff_percentage != null ? `${latest.diff_percentage.toFixed(1)}% changed` : ""}</span>
+          </div>
+          <div style={{ padding: 12 }}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={latest.diff_url} alt="Visual diff" style={{ width: "100%", borderRadius: 8, display: "block" }} />
+          </div>
+        </div>
+      )}
+      </>
+      )}
 
       {/* Changes list + AI panel */}
       <div className="grid-2">

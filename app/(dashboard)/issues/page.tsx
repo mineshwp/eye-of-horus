@@ -11,8 +11,14 @@ const STATUS_TONE: Record<string, "ok" | "med" | "high" | "crit" | "ghost"> = {
   Resolved: "ok",
   Ignored: "ghost",
   "In Progress": "med",
+  Investigating: "med",
+  New: "high",
   Open: "high",
 };
+
+// Statuses that represent an open/unresolved issue
+const OPEN_STATUSES = ["New", "Investigating", "In Progress", "Open"];
+const isOpenStatus = (status?: string) => OPEN_STATUSES.includes(status || "New");
 
 const StatusBadge: React.FC<{ status: string }> = ({ status }) => (
   <Badge tone={STATUS_TONE[status] ?? "high"}>{status || "Open"}</Badge>
@@ -22,9 +28,13 @@ export default function IssuesPage() {
   const router = useRouter();
   const { sites, issues, wpUpdates } = useApp();
 
-  // Derive synthetic issues from wp_updates that have no matching issue
+  // Derive synthetic issues from wp_updates that have no matching UNRESOLVED issue.
+  // Only suppress the synthetic copy when a real, still-open issue already covers it —
+  // a resolved/ignored issue should not hide a freshly-available update.
   const existingWpTitles = new Set(
-    issues.filter((i) => i.category === "WordPress update").map((i) => `${i.siteId}::${i.title}`)
+    issues
+      .filter((i) => i.category === "WordPress update" && isOpenStatus(i.status))
+      .map((i) => `${i.siteId}::${i.title}`)
   );
   const syntheticWpIssues = wpUpdates
     .filter((u) => !existingWpTitles.has(`${u.siteId}::${u.target} update available`))
@@ -38,7 +48,7 @@ export default function IssuesPage() {
       page: "wp-admin/plugins.php",
       recommended: u.notes,
       owner: "Unassigned",
-      status: "Open",
+      status: "New",
       detected: "Now",
       changeType: "WordPress plugin sync",
       confidence: 95,
@@ -48,7 +58,7 @@ export default function IssuesPage() {
 
   const [severityFilter, setSeverityFilter] = useState("All");
   const [categoryFilter, setCategoryFilter] = useState("All");
-  const [statusFilter, setStatusFilter] = useState("Open");
+  const [statusFilter, setStatusFilter] = useState("Open"); // "Open" = any unresolved status
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState<"severity" | "detected">("severity");
 
@@ -69,7 +79,10 @@ export default function IssuesPage() {
     return allIssues
       .filter((i) => severityFilter === "All" || i.severity === severityFilter)
       .filter((i) => categoryFilter === "All" || i.category === categoryFilter)
-      .filter((i) => statusFilter === "All" || (i.status || "Open") === statusFilter)
+      .filter((i) =>
+        statusFilter === "All" ||
+        (statusFilter === "Open" ? isOpenStatus(i.status) : (i.status || "New") === statusFilter)
+      )
       .filter(
         (i) =>
           !search ||
@@ -89,9 +102,7 @@ export default function IssuesPage() {
   }, [allIssues, severityFilter, categoryFilter, statusFilter, search, sortBy]);
 
   const criticalCount = allIssues.filter((i) => i.severity === "critical").length;
-  const openCount = allIssues.filter(
-    (i) => !i.status || i.status === "Open" || i.status === "In Progress"
-  ).length;
+  const openCount = allIssues.filter((i) => isOpenStatus(i.status)).length;
 
   return (
     <div className="page fade-in">
@@ -154,7 +165,9 @@ export default function IssuesPage() {
             onChange={(e) => setStatusFilter(e.target.value)}
           >
             <option value="All">All statuses</option>
-            <option value="Open">Open</option>
+            <option value="Open">Open (unresolved)</option>
+            <option value="New">New</option>
+            <option value="Investigating">Investigating</option>
             <option value="In Progress">In Progress</option>
             <option value="Resolved">Resolved</option>
             <option value="Ignored">Ignored</option>

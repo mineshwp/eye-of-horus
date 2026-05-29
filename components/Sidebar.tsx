@@ -28,6 +28,10 @@ export default function Sidebar() {
   const { sites, issues, wpUpdates, currentUser, signOut } = useApp();
 
   const criticalCount = issues.filter((i) => i.severity === "critical").length;
+  // Open issues = anything not resolved/ignored (matches the Issues page header).
+  const openIssuesCount = issues.filter(
+    (i) => i.status !== "Resolved" && i.status !== "Ignored"
+  ).length;
   const wpCount = wpUpdates.length;
 
   const navigateTo = (path: string) => {
@@ -77,8 +81,8 @@ export default function Sidebar() {
         <NavItem
           icon="issue"
           label="Issues"
-          count={criticalCount}
-          critical
+          count={openIssuesCount}
+          critical={criticalCount > 0}
           active={pathname.startsWith("/issues")}
           onClick={() => navigateTo("/issues")}
         />

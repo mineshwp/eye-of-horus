@@ -803,3 +803,79 @@ npm run check:playwright
 #### 9. Two remaining UI features to build
 - Domain expiry panel on Site Detail page (table exists, no card yet)
 - Playwright form fill + submit testing (detection works, submission not implemented)
+
+---
+
+## 2026-05-29 — Watchtower visual-regression pipeline finished end-to-end
+
+The pipeline previously type-checked but had never been run. This pass applied the
+manual setup, executed it against the SADV site, fixed runtime issues, and
+aligned the runner with the rest of the app.
+
+### Changes
+- **DB** — Applied `20260529100000_playwright_test_config.sql` to Supabase via
+  `supabase db push`. Verified `sites.test_config` (jsonb) and
+  `playwright_checks.page_path` (text) exist.
+- **Storage** — Created the **private** Supabase Storage bucket
+  `watchtower-artifacts` (25 MB file limit, image/png + jpeg + text + json).
+- **`playwright/storage.ts`** — Switched `uploadArtifact()` from
+  `getPublicUrl()` to `createSignedUrl()` with a 1-year TTL. Added a `signKey()`
+  helper for re-signing. Because the URL is written directly into
+  `playwright_checks.{screenshot,baseline,diff}_url`, no read-side changes were
+  needed — the Visual changes tab keeps consuming the URL columns as `<img>`
+  sources.
+- **`playwright/runner.ts`** — Aligned issue inserts with the canonical shape
+  used by `app/api/wordpress/route.ts`:
+  - Generates `id` as `pw-<8hex>` (issues.id is TEXT NOT NULL).
+  - Uses `status: 'New'`, the `detected` label format from `nowLabel()`, and the
+    canonical columns: `title, severity, impact, category, page, recommended,
+    owner, change_type, confidence, evidence`.
+  - Dedup query now checks `status in (New, Investigating, In Progress)` instead
+    of the obsolete `status = 'open'`.
+  - Category mapping: `Visual regression` for diff>10%, `SEO` for noindex,
+    `Availability` for HTTP 4xx/5xx, `JS error` for console spikes,
+    `Playwright` for structural failures, `Form failure` for failed configured
+    forms.
+- **`app/api/playwright/baseline/route.ts`** — Rewrote to work with private
+  storage: parses the storage key out of the signed URL, copies in-storage to
+  `watchtower-artifacts/<siteId>/baselines/<page-slug>/<device>.png`, re-signs,
+  and upserts `playwright_baselines`. Now accepts `pagePath` so per-page
+  baselines work.
+- **Visual changes tab** — "Approve change" now passes `pagePath` so the
+  baseline endpoint promotes the correct per-page slot.
+- **README + `.env.example`** — Added a Watchtower setup section documenting:
+  - Required GitHub repo secrets (`NEXT_PUBLIC_SUPABASE_URL`,
+    `SUPABASE_SERVICE_ROLE_KEY`) for the scheduled workflow.
+  - Required Vercel/local env vars for the in-app "Re-scan now" button
+    (`GITHUB_REPO`, `GITHUB_TOKEN` with `actions: write`, optional
+    `GITHUB_REF`, `GITHUB_WORKFLOW_FILE`).
+  - `TEST_FORM_SUBMISSIONS=false` default and what flipping it does.
+
+### Verification — actual first scan against SADV (sadv.co.za)
+- Seeded `sites.test_config` for SADV with two pages: `/` and `/about/`.
+- Ran `npm run check:playwright` twice.
+- Run 1: 6 checks (3 devices × 2 pages). `/` passed on all devices, `/about/`
+  failed on all (HTTP 404, noindex meta, missing H1 — legitimate findings; the
+  page returns 404). Initial baselines uploaded to storage. 9 issue findings
+  reported, deduped to 3 unique titles inserted into `issues`.
+- Run 2: Baselines round-tripped correctly via signed URL download. Pixel
+  diffs generated against baseline (0.02–0.1% drift, all below the 10%
+  regression threshold). No duplicate issues inserted (verified by counting
+  titles in DB).
+- Spot-checked the signed URLs via direct `fetch()` — both screenshot and
+  baseline returned `200 image/png`, ~620 KB.
+- `playwright_checks` rows have `page_path`, `screenshot_url`, `baseline_url`,
+  and (from run 2) `diff_url` all populated.
+- `issues` table now contains Playwright-detected rows with the same shape as
+  WordPress-update issues (will surface on the Issues page and dashboard).
+
+### Still on the user (one-time, outside this repo)
+1. Add `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` as repository
+   secrets at GitHub → Settings → Secrets and variables → Actions, then trigger
+   the workflow manually once to confirm CI.
+2. Add `GITHUB_REPO` and `GITHUB_TOKEN` (PAT with `actions: write`) to Vercel
+   production env so the "Re-scan now" button works in the live app.
+
+### Typecheck
+`npx tsc --noEmit` passes. `playwright/` typechecks separately (it's excluded
+from the main tsconfig).
