@@ -26,7 +26,13 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => (
 
 export default function IssuesPage() {
   const router = useRouter();
-  const { sites, issues, wpUpdates } = useApp();
+  const { sites, issues, wpUpdates, updateIssue } = useApp();
+
+  const handleToggleComplete = async (e: React.MouseEvent, issueId: string, currentStatus: string) => {
+    e.stopPropagation();
+    const next = currentStatus === "Resolved" ? "New" : "Resolved";
+    await updateIssue(issueId, { status: next });
+  };
 
   // Derive synthetic issues from wp_updates that have no matching UNRESOLVED issue.
   // Only suppress the synthetic copy when a real, still-open issue already covers it —
@@ -356,7 +362,26 @@ export default function IssuesPage() {
                       )}
                     </td>
                     <td>
-                      <StatusBadge status={issue.status || "Open"} />
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        {!issue.id.startsWith("wp-update-") && (
+                          <button
+                            type="button"
+                            title={issue.status === "Resolved" ? "Reopen issue" : "Mark complete"}
+                            onClick={(e) => handleToggleComplete(e, issue.id, issue.status || "New")}
+                            style={{
+                              width: 18, height: 18, flexShrink: 0, cursor: "pointer",
+                              display: "grid", placeItems: "center", borderRadius: 5,
+                              background: issue.status === "Resolved" ? "var(--green)" : "transparent",
+                              border: `1.5px solid ${issue.status === "Resolved" ? "var(--green)" : "var(--border-mid)"}`,
+                              color: issue.status === "Resolved" ? "#04110a" : "var(--text-dim)",
+                              padding: 0,
+                            }}
+                          >
+                            {issue.status === "Resolved" && <Icon name="check" size={11} />}
+                          </button>
+                        )}
+                        <StatusBadge status={issue.status || "Open"} />
+                      </div>
                     </td>
                     <td className="dim mono" style={{ fontSize: 12 }}>
                       {issue.detected || "—"}

@@ -3,7 +3,7 @@
  * Plugin Name: Eye of Horus Client
  * Plugin URI: https://wetpaint.co.za/
  * Description: Technical monitoring and reporting agent for the Eye of Horus Dashboard.
- * Version: 2.3.0
+ * Version: 2.4.0
  * Author: Eye of Horus
  * Author URI: https://wetpaint.co.za/
  * Text Domain: eye-of-horus-client
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 
 if (!class_exists('Eye_Of_Horus_Client')) {
     final class Eye_Of_Horus_Client {
-        const VERSION      = '2.3.0';
+        const VERSION      = '2.4.0';
         const OPTION_NAME  = 'eoh_settings';
         const CRON_HOOK    = 'eoh_daily_sync';
         const LAST_SYNC    = 'eoh_last_sync_result';
@@ -34,11 +34,15 @@ if (!class_exists('Eye_Of_Horus_Client')) {
         private function __construct() {
             add_action('admin_menu',            [$this, 'add_settings_page']);
             add_action('admin_init',            [$this, 'register_settings']);
+            add_action('wp_footer',             [$this, 'maybe_print_rum_tag']);
             add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_assets']);
+            add_action('eoh_cron_runner',       [$this, 'cron_sync_data']);
             add_action(self::CRON_HOOK,         [$this, 'sync_data']);
             add_action('wp_ajax_eoh_manual_sync',       [$this, 'ajax_manual_sync']);
             add_action('wp_ajax_eoh_test_connection',   [$this, 'ajax_test_connection']);
             add_action('rest_api_init',                 [$this, 'register_rest_routes']);
+            add_filter('cron_schedules',                [$this, 'add_custom_cron_schedules']);
+            add_action('update_option_' . self::OPTION_NAME, [$this, 'update_cron_schedule'], 10, 2);
 
             // Form submission tracking — A-Forms
             add_action('a_forms_after_form_submission', [$this, 'track_submission'], 10, 1);
@@ -55,16 +59,110 @@ if (!class_exists('Eye_Of_Horus_Client')) {
         }
 
         public static function activate() {
-            if (!wp_next_scheduled(self::CRON_HOOK)) {
-                wp_schedule_event(time() + HOUR_IN_SECONDS, 'daily', self::CRON_HOOK);
+            if (!wp_next_scheduled('eoh_cron_runner')) {
+                wp_schedule_event(time(), 'five_minutes', 'eoh_cron_runner');
             }
-        }
-
-        public static function deactivate() {
             $ts = wp_next_scheduled(self::CRON_HOOK);
             if ($ts) {
                 wp_unschedule_event($ts, self::CRON_HOOK);
             }
+        }
+
+        public static function deactivate() {
+            $ts = wp_next_scheduled('eoh_cron_runner');
+            if ($ts) {
+                wp_unschedule_event($ts, 'eoh_cron_runner');
+            }
+            $old_ts = wp_next_scheduled(self::CRON_HOOK);
+            if ($old_ts) {
+                wp_unschedule_event($old_ts, self::CRON_HOOK);
+            }
+        }
+
+        public function add_custom_cron_schedules($schedules) {
+            $schedules['five_minutes'] = [
+                'interval' => 5 * MINUTE_IN_SECONDS,
+                'display'  => __('Every 5 Minutes', 'eye-of-horus-client'),
+            ];
+            $schedules['fifteen_minutes'] = [
+                'interval' => 15 * MINUTE_IN_SECONDS,
+                'display'  => __('Every 15 Minutes', 'eye-of-horus-client'),
+            ];
+            $schedules['half_hour'] = [
+                'interval' => 30 * MINUTE_IN_SECONDS,
+                'display'  => __('Every 30 Minutes', 'eye-of-horus-client'),
+            ];
+            $schedules['weekly'] = [
+                'interval' => 7 * DAY_IN_SECONDS,
+                'display'  => __('Weekly', 'eye-of-horus-client'),
+            ];
+            return $schedules;
+        }
+
+        public function update_cron_schedule($old_value, $new_value) {
+            if (!wp_next_scheduled('eoh_cron_runner')) {
+                wp_schedule_event(time(), 'five_minutes', 'eoh_cron_runner');
+            }
+            $old_ts = wp_next_scheduled(self::CRON_HOOK);
+            if ($old_ts) {
+                wp_unschedule_event($old_ts, self::CRON_HOOK);
+            }
+        }
+
+        private function get_interval_seconds($interval) {
+            switch ($interval) {
+                case 'five_minutes':
+                    return 5 * MINUTE_IN_SECONDS;
+                case 'fifteen_minutes':
+                    return 15 * MINUTE_IN_SECONDS;
+                case 'half_hour':
+                    return 30 * MINUTE_IN_SECONDS;
+                case 'hourly':
+                    return HOUR_IN_SECONDS;
+                case 'twicedaily':
+                    return 12 * HOUR_IN_SECONDS;
+                case 'daily':
+                    return DAY_IN_SECONDS;
+                case 'weekly':
+                    return 7 * DAY_IN_SECONDS;
+                default:
+                    return 0; // Disabled
+            }
+        }
+
+        public function cron_sync_data() {
+            $opts = wp_parse_args(get_option(self::OPTION_NAME, []), $this->default_settings());
+            $now = time();
+
+            // 1. Check heartbeat
+            $hb_sec = $this->get_interval_seconds($opts['heartbeat_interval'] ?? 'fifteen_minutes');
+            $last_hb = (int) get_option('eoh_last_sent_heartbeat', 0);
+            $hb_due = ($hb_sec > 0 && ($now - $last_hb) >= $hb_sec);
+
+            // 2. Check each module
+            $modules = ['core', 'plugins', 'themes', 'security', 'forms', 'server', 'wordfence'];
+            $any_module_due = false;
+            $due_modules = [];
+
+            foreach ($modules as $mod) {
+                $mod_interval = $opts[$mod . '_interval'] ?? 'daily';
+                $mod_sec = $this->get_interval_seconds($mod_interval);
+                $last_sent = (int) get_option('eoh_last_sent_' . $mod, 0);
+
+                if ($mod_sec > 0 && ($now - $last_sent) >= $mod_sec) {
+                    $due_modules[$mod] = true;
+                    $any_module_due = true;
+                } else {
+                    $due_modules[$mod] = false;
+                }
+            }
+
+            // If neither heartbeat nor any module is due, skip
+            if (!$hb_due && !$any_module_due) {
+                return;
+            }
+
+            $this->sync_data($due_modules, $hb_due);
         }
 
         // -------------------------------------------------------------------------
@@ -95,16 +193,16 @@ if (!class_exists('Eye_Of_Horus_Client')) {
             return [
                 'api_url'           => '',
                 'site_key'          => '',
-                'enabled_modules'   => [
-                    'core'       => '1',
-                    'plugins'    => '1',
-                    'themes'     => '1',
-                    'security'   => '1',
-                    'forms'      => '1',
-                    'server'     => '1',
-                    'wordfence'  => '1',
-                ],
+                'heartbeat_interval'=> 'fifteen_minutes',
+                'core_interval'     => 'daily',
+                'plugins_interval'  => 'daily',
+                'themes_interval'   => 'daily',
+                'security_interval' => 'daily',
+                'forms_interval'    => 'daily',
+                'server_interval'   => 'daily',
+                'wordfence_interval'=> 'daily',
                 'debug_mode'        => '',
+                'rum_consent'       => '1', // allow Eye of Horus front-end analytics locally
             ];
         }
 
@@ -140,9 +238,23 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                 $out['debug_mode'] = '1';
             }
 
+            // RUM consent is a checkbox: present = allowed, absent = opted out.
+            $out['rum_consent'] = !empty($input['rum_consent']) ? '1' : '';
+
+            $allowed = ['disabled', 'five_minutes', 'fifteen_minutes', 'half_hour', 'hourly', 'twicedaily', 'daily', 'weekly'];
+
+            if (isset($input['heartbeat_interval'])) {
+                $hb = sanitize_text_field($input['heartbeat_interval']);
+                $out['heartbeat_interval'] = in_array($hb, $allowed, true) ? $hb : 'fifteen_minutes';
+            }
+
             $modules = ['core', 'plugins', 'themes', 'security', 'forms', 'server', 'wordfence'];
             foreach ($modules as $mod) {
-                $out['enabled_modules'][$mod] = !empty($input['enabled_modules'][$mod]) ? '1' : '';
+                $key = $mod . '_interval';
+                if (isset($input[$key])) {
+                    $val = sanitize_text_field($input[$key]);
+                    $out[$key] = in_array($val, $allowed, true) ? $val : 'daily';
+                }
             }
 
             return $out;
@@ -173,6 +285,30 @@ if (!class_exists('Eye_Of_Horus_Client')) {
         // -------------------------------------------------------------------------
         // Settings UI
         // -------------------------------------------------------------------------
+
+        private function render_module_frequency_row($key, $label) {
+            $opts = wp_parse_args(get_option(self::OPTION_NAME, []), $this->default_settings());
+            $current_val = $opts[$key . '_interval'] ?? 'daily';
+            ?>
+            <tr>
+                <th scope="row">
+                    <label for="eoh-<?php echo esc_attr($key); ?>-interval"><?php echo esc_html($label); ?></label>
+                </th>
+                <td>
+                    <select id="eoh-<?php echo esc_attr($key); ?>-interval" name="<?php echo esc_attr(self::OPTION_NAME); ?>[<?php echo esc_attr($key); ?>_interval]">
+                        <option value="disabled" <?php selected($current_val, 'disabled'); ?>><?php esc_html_e('Disabled', 'eye-of-horus-client'); ?></option>
+                        <option value="five_minutes" <?php selected($current_val, 'five_minutes'); ?>><?php esc_html_e('Every 5 Minutes', 'eye-of-horus-client'); ?></option>
+                        <option value="fifteen_minutes" <?php selected($current_val, 'fifteen_minutes'); ?>><?php esc_html_e('Every 15 Minutes', 'eye-of-horus-client'); ?></option>
+                        <option value="half_hour" <?php selected($current_val, 'half_hour'); ?>><?php esc_html_e('Every 30 Minutes', 'eye-of-horus-client'); ?></option>
+                        <option value="hourly" <?php selected($current_val, 'hourly'); ?>><?php esc_html_e('Hourly', 'eye-of-horus-client'); ?></option>
+                        <option value="twicedaily" <?php selected($current_val, 'twicedaily'); ?>><?php esc_html_e('Twice Daily (12 Hours)', 'eye-of-horus-client'); ?></option>
+                        <option value="daily" <?php selected($current_val, 'daily'); ?>><?php esc_html_e('Daily (24 Hours)', 'eye-of-horus-client'); ?></option>
+                        <option value="weekly" <?php selected($current_val, 'weekly'); ?>><?php esc_html_e('Weekly', 'eye-of-horus-client'); ?></option>
+                    </select>
+                </td>
+            </tr>
+            <?php
+        }
 
         public function render_settings_ui() {
             if (!current_user_can('manage_options')) {
@@ -229,9 +365,26 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                                 <p class="description"><?php esc_html_e('Sent as the X-EOH-KEY header. Generate this key from the Eye of Horus dashboard.', 'eye-of-horus-client'); ?></p>
                             </td>
                         </tr>
+                        <tr>
+                            <th scope="row">
+                                <label for="eoh-heartbeat-interval"><?php esc_html_e('Uptime Heartbeat Frequency', 'eye-of-horus-client'); ?></label>
+                            </th>
+                            <td>
+                                <select id="eoh-heartbeat-interval" name="<?php echo esc_attr(self::OPTION_NAME); ?>[heartbeat_interval]">
+                                    <option value="disabled" <?php selected($opts['heartbeat_interval'], 'disabled'); ?>><?php esc_html_e('Disabled', 'eye-of-horus-client'); ?></option>
+                                    <option value="five_minutes" <?php selected($opts['heartbeat_interval'], 'five_minutes'); ?>><?php esc_html_e('Every 5 Minutes', 'eye-of-horus-client'); ?></option>
+                                    <option value="fifteen_minutes" <?php selected($opts['heartbeat_interval'], 'fifteen_minutes'); ?>><?php esc_html_e('Every 15 Minutes', 'eye-of-horus-client'); ?></option>
+                                    <option value="half_hour" <?php selected($opts['heartbeat_interval'], 'half_hour'); ?>><?php esc_html_e('Every 30 Minutes', 'eye-of-horus-client'); ?></option>
+                                    <option value="hourly" <?php selected($opts['heartbeat_interval'], 'hourly'); ?>><?php esc_html_e('Hourly', 'eye-of-horus-client'); ?></option>
+                                    <option value="twicedaily" <?php selected($opts['heartbeat_interval'], 'twicedaily'); ?>><?php esc_html_e('Twice Daily (12 Hours)', 'eye-of-horus-client'); ?></option>
+                                    <option value="daily" <?php selected($opts['heartbeat_interval'], 'daily'); ?>><?php esc_html_e('Daily (24 Hours)', 'eye-of-horus-client'); ?></option>
+                                </select>
+                                <p class="description"><?php esc_html_e('How often to send a quick availability signal to indicate the site is online.', 'eye-of-horus-client'); ?></p>
+                            </td>
+                        </tr>
                     </table>
 
-                    <h2><?php esc_html_e('Data Modules', 'eye-of-horus-client'); ?></h2>
+                    <h2><?php esc_html_e('Data Modules Sync Frequency', 'eye-of-horus-client'); ?></h2>
                     <table class="form-table" role="presentation">
                         <?php
                         $module_labels = [
@@ -243,20 +396,10 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                             'server'     => __('Server (DB size, cron status, error log)', 'eye-of-horus-client'),
                             'wordfence'  => __('Wordfence (firewall, attacks, logins, scan issues)', 'eye-of-horus-client'),
                         ];
-                        foreach ($module_labels as $key => $label) : ?>
-                            <tr>
-                                <th scope="row"><?php echo esc_html($label); ?></th>
-                                <td>
-                                    <label>
-                                        <input type="checkbox"
-                                            name="<?php echo esc_attr(self::OPTION_NAME); ?>[enabled_modules][<?php echo esc_attr($key); ?>]"
-                                            value="1"
-                                            <?php checked(!empty($modules[$key])); ?> />
-                                        <?php esc_html_e('Send this data to the dashboard', 'eye-of-horus-client'); ?>
-                                    </label>
-                                </td>
-                            </tr>
-                        <?php endforeach; ?>
+                        foreach ($module_labels as $key => $label) {
+                            $this->render_module_frequency_row($key, $label);
+                        }
+                        ?>
                         <tr>
                             <th scope="row"><?php esc_html_e('Debug mode', 'eye-of-horus-client'); ?></th>
                             <td>
@@ -267,6 +410,28 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                                         <?php checked(!empty($opts['debug_mode'])); ?> />
                                     <?php esc_html_e('Log sync payloads to the WordPress debug log', 'eye-of-horus-client'); ?>
                                 </label>
+                            </td>
+                        </tr>
+                        <?php $rum_cfg = get_option('eoh_rum_config', []); ?>
+                        <tr>
+                            <th scope="row"><?php esc_html_e('Front-end analytics', 'eye-of-horus-client'); ?></th>
+                            <td>
+                                <label>
+                                    <input type="checkbox"
+                                        name="<?php echo esc_attr(self::OPTION_NAME); ?>[rum_consent]"
+                                        value="1"
+                                        <?php checked(!empty($opts['rum_consent'])); ?> />
+                                    <?php esc_html_e('Allow Eye of Horus to load its real-user analytics script on this site', 'eye-of-horus-client'); ?>
+                                </label>
+                                <p class="description">
+                                    <?php
+                                    if (!empty($rum_cfg['enabled'])) {
+                                        esc_html_e('Status: enabled in the Eye of Horus dashboard. The script loads when the box above is ticked.', 'eye-of-horus-client');
+                                    } else {
+                                        esc_html_e('Status: disabled in the Eye of Horus dashboard. Enable it there first; nothing loads until then.', 'eye-of-horus-client');
+                                    }
+                                    ?>
+                                </p>
                             </td>
                         </tr>
                     </table>
@@ -317,9 +482,8 @@ if (!class_exists('Eye_Of_Horus_Client')) {
         // Data collection
         // -------------------------------------------------------------------------
 
-        public function get_site_data() {
+        public function get_site_data($due_modules = null) {
             $opts    = wp_parse_args(get_option(self::OPTION_NAME, []), $this->default_settings());
-            $modules = $opts['enabled_modules'] ?? [];
 
             if (!function_exists('get_plugins')) {
                 require_once ABSPATH . 'wp-admin/includes/plugin.php';
@@ -336,144 +500,69 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                 'last_sync'             => current_time('c'),
             ];
 
-            // --- Core ---
-            if (!empty($modules['core'])) {
-                $payload['wp_version']    = get_bloginfo('version');
-                $payload['php_version']   = phpversion();
-                $payload['mysql_version'] = $this->get_mysql_version();
+            $modules = ['core', 'plugins', 'themes', 'security', 'forms', 'server', 'wordfence'];
+            foreach ($modules as $mod) {
+                // If it is due, or if we are doing a manual sync (due_modules is null)
+                $is_due = ($due_modules === null || !empty($due_modules[$mod]));
+                
+                // If the module is disabled, skip it entirely
+                $mod_interval = $opts[$mod . '_interval'] ?? 'daily';
+                if ($mod_interval === 'disabled' && $due_modules !== null) {
+                    continue;
+                }
 
-                $wp_update = get_site_transient('update_core');
-                $core_update_available = false;
-                $core_new_version      = null;
-                if (isset($wp_update->updates) && is_array($wp_update->updates)) {
-                    foreach ($wp_update->updates as $u) {
-                        if (isset($u->response) && $u->response === 'upgrade') {
-                            $core_update_available = true;
-                            $core_new_version = $u->version ?? null;
+                if ($is_due) {
+                    // Collect fresh data
+                    $data = null;
+                    switch ($mod) {
+                        case 'core':
+                            $data = $this->collect_core_data();
                             break;
+                        case 'plugins':
+                            $data = $this->collect_plugins_data();
+                            break;
+                        case 'themes':
+                            $data = $this->collect_themes_data();
+                            break;
+                        case 'security':
+                            $data = $this->collect_security_data();
+                            break;
+                        case 'forms':
+                            $data = $this->collect_forms_data_wrapper();
+                            break;
+                        case 'server':
+                            $data = $this->collect_server_data();
+                            break;
+                        case 'wordfence':
+                            $data = $this->collect_wordfence_data();
+                            break;
+                    }
+                    if ($data !== null) {
+                        update_option('eoh_cache_' . $mod, $data, false);
+                    }
+                } else {
+                    // Use cached data
+                    $data = get_option('eoh_cache_' . $mod, null);
+                }
+
+                // Add to payload
+                if ($data !== null) {
+                    if ($mod === 'core') {
+                        $payload = array_merge($payload, $data);
+                    } elseif ($mod === 'plugins') {
+                        $payload['plugin_data'] = $data;
+                        if (isset($payload['update_data'])) {
+                            $payload['update_data']['plugin_updates'] = count(array_filter($data, fn($p) => !empty($p['update_available'])));
                         }
+                    } elseif ($mod === 'themes') {
+                        $payload['theme_data'] = $data;
+                        if (isset($payload['update_data'])) {
+                            $payload['update_data']['theme_updates'] = !empty($data['update_available']) ? 1 : 0;
+                        }
+                    } else {
+                        $payload[$mod . '_data'] = $data;
                     }
                 }
-                $payload['update_data'] = [
-                    'core_update'     => $core_update_available,
-                    'core_version'    => $core_new_version,
-                    'plugin_updates'  => 0,
-                    'theme_updates'   => 0,
-                ];
-            }
-
-            // --- Plugins ---
-            if (!empty($modules['plugins'])) {
-                $all_plugins    = get_plugins();
-                $active_plugins = get_option('active_plugins', []);
-                $plugin_updates = get_site_transient('update_plugins');
-
-                $plugin_list = [];
-                foreach ($all_plugins as $file => $data) {
-                    $has_update  = isset($plugin_updates->response[$file]);
-                    $new_version = $has_update ? ($plugin_updates->response[$file]->new_version ?? null) : null;
-                    $plugin_list[] = [
-                        'file'             => $file,
-                        'name'             => $data['Name'],
-                        'version'          => $data['Version'],
-                        'active'           => in_array($file, $active_plugins, true),
-                        'update_available' => $has_update,
-                        'new_version'      => $new_version,
-                    ];
-                }
-                $payload['plugin_data'] = $plugin_list;
-
-                if (isset($payload['update_data'])) {
-                    $payload['update_data']['plugin_updates'] = count(array_filter($plugin_list, fn($p) => $p['update_available']));
-                }
-            }
-
-            // --- Themes ---
-            if (!empty($modules['themes'])) {
-                $theme         = wp_get_theme();
-                $theme_updates = get_site_transient('update_themes');
-                $theme_slug    = $theme->get_stylesheet();
-                $has_theme_upd = isset($theme_updates->response[$theme_slug]);
-
-                $parent_theme = null;
-                if ($theme->parent()) {
-                    $parent_theme = [
-                        'name'    => $theme->parent()->get('Name'),
-                        'version' => $theme->parent()->get('Version'),
-                    ];
-                }
-
-                $payload['theme_data'] = [
-                    'name'             => $theme->get('Name'),
-                    'version'          => $theme->get('Version'),
-                    'template'         => $theme->get_template(),
-                    'parent_theme'     => $parent_theme,
-                    'update_available' => $has_theme_upd,
-                    'new_version'      => $has_theme_upd ? ($theme_updates->response[$theme_slug]['new_version'] ?? null) : null,
-                ];
-
-                if (isset($payload['update_data'])) {
-                    $payload['update_data']['theme_updates'] = $has_theme_upd ? 1 : 0;
-                }
-            }
-
-            // --- Security ---
-            if (!empty($modules['security'])) {
-                $admin_users = get_users(['role' => 'administrator', 'fields' => 'ID']);
-
-                $security_plugin = null;
-                $known_security = [
-                    'wordfence/wordfence.php'              => 'Wordfence',
-                    'better-wp-security/better-wp-security.php' => 'iThemes Security',
-                    'sucuri-scanner/sucuri.php'            => 'Sucuri',
-                    'all-in-one-wp-security-and-firewall/wp-security.php' => 'All-In-One Security',
-                    'jetpack/jetpack.php'                  => 'Jetpack (Protect)',
-                ];
-                $active = get_option('active_plugins', []);
-                foreach ($known_security as $slug => $name) {
-                    if (in_array($slug, $active, true)) {
-                        $security_plugin = $name;
-                        break;
-                    }
-                }
-
-                // Read last 20 lines of debug log if readable
-                $log_lines = [];
-                $log_path  = WP_CONTENT_DIR . '/debug.log';
-                if (is_readable($log_path) && filesize($log_path) > 0) {
-                    $lines = $this->tail_file($log_path, 20);
-                    // Strip any lines that may contain user data
-                    $log_lines = array_map('sanitize_text_field', $lines);
-                }
-
-                $payload['security_data'] = [
-                    'debug_mode'      => (bool) (defined('WP_DEBUG') && WP_DEBUG),
-                    'admin_users'     => count($admin_users),
-                    'security_plugin' => $security_plugin,
-                    'error_log_lines' => $log_lines,
-                ];
-            }
-
-            // --- Forms ---
-            if (!empty($modules['forms'])) {
-                $payload['form_data'] = $this->collect_form_data();
-            }
-
-            // --- Server ---
-            if (!empty($modules['server'])) {
-                $payload['server_data'] = [
-                    'db_size_mb'       => $this->get_db_size_mb(),
-                    'cron_enabled'     => !(defined('DISABLE_WP_CRON') && DISABLE_WP_CRON),
-                    'site_health_ok'   => $this->get_site_health_status(),
-                    'language'         => get_bloginfo('language'),
-                    'timezone'         => wp_timezone_string(),
-                    'admin_email'      => get_bloginfo('admin_email'),
-                ];
-            }
-
-            // --- Wordfence ---
-            if (!empty($modules['wordfence'])) {
-                $payload['wordfence_data'] = $this->collect_wordfence_data();
             }
 
             if (!empty($opts['debug_mode'])) {
@@ -481,6 +570,126 @@ if (!class_exists('Eye_Of_Horus_Client')) {
             }
 
             return $payload;
+        }
+
+        private function collect_core_data() {
+            $wp_update = get_site_transient('update_core');
+            $core_update_available = false;
+            $core_new_version      = null;
+            if (isset($wp_update->updates) && is_array($wp_update->updates)) {
+                foreach ($wp_update->updates as $u) {
+                    if (isset($u->response) && $u->response === 'upgrade') {
+                        $core_update_available = true;
+                        $core_new_version = $u->version ?? null;
+                        break;
+                    }
+                }
+            }
+            return [
+                'wp_version'    => get_bloginfo('version'),
+                'php_version'   => phpversion(),
+                'mysql_version' => $this->get_mysql_version(),
+                'update_data'   => [
+                    'core_update'     => $core_update_available,
+                    'core_version'    => $core_new_version,
+                    'plugin_updates'  => 0,
+                    'theme_updates'   => 0,
+                ]
+            ];
+        }
+
+        private function collect_plugins_data() {
+            $all_plugins    = get_plugins();
+            $active_plugins = get_option('active_plugins', []);
+            $plugin_updates = get_site_transient('update_plugins');
+
+            $plugin_list = [];
+            foreach ($all_plugins as $file => $data) {
+                $has_update  = isset($plugin_updates->response[$file]);
+                $new_version = $has_update ? ($plugin_updates->response[$file]->new_version ?? null) : null;
+                $plugin_list[] = [
+                    'file'             => $file,
+                    'name'             => $data['Name'],
+                    'version'          => $data['Version'],
+                    'active'           => in_array($file, $active_plugins, true),
+                    'update_available' => $has_update,
+                    'new_version'      => $new_version,
+                ];
+            }
+            return $plugin_list;
+        }
+
+        private function collect_themes_data() {
+            $theme         = wp_get_theme();
+            $theme_updates = get_site_transient('update_themes');
+            $theme_slug    = $theme->get_stylesheet();
+            $has_theme_upd = isset($theme_updates->response[$theme_slug]);
+
+            $parent_theme = null;
+            if ($theme->parent()) {
+                $parent_theme = [
+                    'name'    => $theme->parent()->get('Name'),
+                    'version' => $theme->parent()->get('Version'),
+                ];
+            }
+
+            return [
+                'name'             => $theme->get('Name'),
+                'version'          => $theme->get('Version'),
+                'template'         => $theme->get_template(),
+                'parent_theme'     => $parent_theme,
+                'update_available' => $has_theme_upd,
+                'new_version'      => $has_theme_upd ? ($theme_updates->response[$theme_slug]['new_version'] ?? null) : null,
+            ];
+        }
+
+        private function collect_security_data() {
+            $admin_users = get_users(['role' => 'administrator', 'fields' => 'ID']);
+
+            $security_plugin = null;
+            $known_security = [
+                'wordfence/wordfence.php'              => 'Wordfence',
+                'better-wp-security/better-wp-security.php' => 'iThemes Security',
+                'sucuri-scanner/sucuri.php'            => 'Sucuri',
+                'all-in-one-wp-security-and-firewall/wp-security.php' => 'All-In-One Security',
+                'jetpack/jetpack.php'                  => 'Jetpack (Protect)',
+            ];
+            $active = get_option('active_plugins', []);
+            foreach ($known_security as $slug => $name) {
+                if (in_array($slug, $active, true)) {
+                    $security_plugin = $name;
+                    break;
+                }
+            }
+
+            $log_lines = [];
+            $log_path  = WP_CONTENT_DIR . '/debug.log';
+            if (is_readable($log_path) && filesize($log_path) > 0) {
+                $lines = $this->tail_file($log_path, 20);
+                $log_lines = array_map('sanitize_text_field', $lines);
+            }
+
+            return [
+                'debug_mode'      => (bool) (defined('WP_DEBUG') && WP_DEBUG),
+                'admin_users'     => count($admin_users),
+                'security_plugin' => $security_plugin,
+                'error_log_lines' => $log_lines,
+            ];
+        }
+
+        private function collect_forms_data_wrapper() {
+            return $this->collect_form_data();
+        }
+
+        private function collect_server_data() {
+            return [
+                'db_size_mb'       => $this->get_db_size_mb(),
+                'cron_enabled'     => !(defined('DISABLE_WP_CRON') && DISABLE_WP_CRON),
+                'site_health_ok'   => $this->get_site_health_status(),
+                'language'         => get_bloginfo('language'),
+                'timezone'         => wp_timezone_string(),
+                'admin_email'      => get_bloginfo('admin_email'),
+            ];
         }
 
         private function get_mysql_version() {
@@ -1057,7 +1266,7 @@ if (!class_exists('Eye_Of_Horus_Client')) {
         // Sync
         // -------------------------------------------------------------------------
 
-        public function sync_data() {
+        public function sync_data($due_modules = null, $hb_sent = false) {
             $opts = wp_parse_args(get_option(self::OPTION_NAME, []), $this->default_settings());
 
             if (empty($opts['api_url']) || empty($opts['site_key'])) {
@@ -1065,7 +1274,12 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                 return new WP_Error('eoh_missing_settings', 'API endpoint or site key is missing.');
             }
 
-            $data     = $this->get_site_data();
+            $data = $this->get_site_data($due_modules);
+            
+            if ($hb_sent) {
+                $data['heartbeat'] = true;
+            }
+
             $endpoint = $this->normalize_api_url($opts['api_url']);
             $response = wp_remote_post($endpoint, [
                 'headers' => [
@@ -1093,8 +1307,61 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                 return new WP_Error('eoh_http_error', $msg);
             }
 
+            // Update run timestamps on successful transmission
+            $now = time();
+            if ($hb_sent) {
+                update_option('eoh_last_sent_heartbeat', $now, false);
+            }
+            if ($due_modules !== null) {
+                foreach ($due_modules as $mod => $is_due) {
+                    if ($is_due) {
+                        update_option('eoh_last_sent_' . $mod, $now, false);
+                    }
+                }
+            } else {
+                update_option('eoh_last_sent_heartbeat', $now, false);
+                $modules = ['core', 'plugins', 'themes', 'security', 'forms', 'server', 'wordfence'];
+                foreach ($modules as $mod) {
+                    update_option('eoh_last_sent_' . $mod, $now, false);
+                }
+            }
+
+            // Cache the RUM config returned by the dashboard so the front-end
+            // tracking tag can be printed without an extra round-trip.
+            $decoded = json_decode($body, true);
+            if (is_array($decoded) && isset($decoded['rum']) && is_array($decoded['rum'])) {
+                update_option('eoh_rum_config', [
+                    'enabled'     => !empty($decoded['rum']['enabled']),
+                    'tracking_id' => isset($decoded['rum']['tracking_id']) ? sanitize_text_field((string) $decoded['rum']['tracking_id']) : '',
+                    'script_url'  => isset($decoded['rum']['script_url']) ? esc_url_raw((string) $decoded['rum']['script_url']) : '',
+                ], false);
+            }
+
             $this->store_sync_result(true, __('Sync completed successfully.', 'eye-of-horus-client'));
             return true;
+        }
+
+        /**
+         * Print the Eye of Horus RUM tag in the site footer when collection is
+         * enabled in the dashboard AND the site owner has not opted out locally.
+         */
+        public function maybe_print_rum_tag() {
+            if (is_admin()) {
+                return;
+            }
+            $cfg = get_option('eoh_rum_config', []);
+            if (empty($cfg['enabled']) || empty($cfg['tracking_id']) || empty($cfg['script_url'])) {
+                return;
+            }
+            $opts = wp_parse_args(get_option(self::OPTION_NAME, []), $this->default_settings());
+            if (empty($opts['rum_consent'])) {
+                return; // local opt-out
+            }
+            printf(
+                '<script src="%s" data-eoh="%s" defer></script>' . "\n",
+                esc_url($cfg['script_url']),
+                esc_attr($cfg['tracking_id'])
+            );
         }
 
         private function store_sync_result($success, $message) {
@@ -1182,11 +1449,37 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                 'callback'            => [$this, 'rest_update_plugin'],
                 'permission_callback' => '__return_true',
             ]);
+            register_rest_route('eye-of-horus/v1', '/sync', [
+                'methods'             => 'POST',
+                'callback'            => [$this, 'rest_trigger_sync'],
+                'permission_callback' => '__return_true',
+            ]);
+        }
+
+        public function rest_trigger_sync($request) {
+            $settings    = get_option(self::OPTION_NAME, []);
+            $stored_key  = isset($settings['site_key']) ? $settings['site_key'] : (isset($settings['api_key']) ? $settings['api_key'] : '');
+            $provided_key = $request->get_header('X-EOH-KEY');
+
+            if (empty($stored_key) || $provided_key !== $stored_key) {
+                return new WP_Error('unauthorized', __('Invalid API key.', 'eye-of-horus-client'), ['status' => 401]);
+            }
+
+            $result = $this->sync_data(null, true);
+
+            if (is_wp_error($result)) {
+                return new WP_Error('sync_failed', $result->get_error_message(), ['status' => 500]);
+            }
+
+            return rest_ensure_response([
+                'ok'      => true,
+                'message' => __('Sync completed successfully.', 'eye-of-horus-client'),
+            ]);
         }
 
         public function rest_update_plugin($request) {
             $settings    = get_option(self::OPTION_NAME, []);
-            $stored_key  = isset($settings['api_key']) ? $settings['api_key'] : '';
+            $stored_key  = isset($settings['site_key']) ? $settings['site_key'] : (isset($settings['api_key']) ? $settings['api_key'] : '');
             $provided_key = $request->get_header('X-EOH-KEY');
 
             if (empty($stored_key) || $provided_key !== $stored_key) {

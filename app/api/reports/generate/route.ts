@@ -66,6 +66,9 @@ export async function POST(request: NextRequest) {
     // Build executive summary
     const execSummary = [
       `${content.siteName} maintained a health score of ${content.health.score}/100 during this period.`,
+      content.pillars
+        ? `Overall executive score: ${content.pillars.overall}/100 across performance, UX, SEO, accessibility and reliability.`
+        : '',
       content.issues.critical > 0
         ? `${content.issues.critical} critical issue${content.issues.critical > 1 ? 's were' : ' was'} detected requiring immediate attention.`
         : 'No critical issues were detected.',

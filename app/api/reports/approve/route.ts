@@ -15,6 +15,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getApiUser, unauthorizedResponse } from "@/lib/auth/index";
+import { logAudit } from "@/lib/audit";
 
 export const runtime = "nodejs";
 
@@ -88,6 +89,8 @@ export async function POST(req: NextRequest) {
   if (updateError) {
     return NextResponse.json({ error: updateError.message }, { status: 500 });
   }
+
+  await logAudit({ actorEmail: user.email, action: `report.${action}`, targetType: "report", targetId: reportId, detail: { from: report.status, to: transition.to, note: note ?? null }, supabase });
 
   return NextResponse.json({ ok: true, status: transition.to });
 }

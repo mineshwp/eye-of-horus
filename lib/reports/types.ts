@@ -89,14 +89,49 @@ export interface ReportSecurity {
   last_scan_time: string | null;
 }
 
+// ─── Phase 1d: executive score, what-changed, ranked recommendations ──────────
+
+export interface ReportPillars {
+  performance: number | null;
+  ux: number | null;
+  seo: number | null;
+  accessibility: number | null;
+  reliability: number | null;
+  /** Average of the available (non-null) pillars, 0–100. */
+  overall: number;
+}
+
+export interface ReportChange {
+  metric: string;
+  current: number;
+  previous: number;
+  /** Signed percentage change, current vs previous. */
+  deltaPct: number;
+  direction: 'up' | 'down' | 'flat';
+  /** Whether the movement is good for the business (traffic up = good, errors up = bad). */
+  good: boolean;
+  unit?: string;
+}
+
+export interface ReportRecommendation {
+  text: string;
+  priority: 'high' | 'medium' | 'low';
+  /** Higher = act sooner. Weighted by severity and (for traffic-relevant items) site traffic. */
+  impactScore: number;
+  category: string;
+}
+
 export interface ReportContent {
   health: ReportHealth;
+  pillars?: ReportPillars;
+  changes?: ReportChange[];
   issues: ReportIssues;
   wordpress: ReportWordPress;
   playwright: ReportPlaywright;
   forms: ReportForms;
   security?: ReportSecurity;
   recommendations: string[];
+  rankedRecommendations?: ReportRecommendation[];
   siteName: string;
   siteUrl: string;
   generatedAt: string;

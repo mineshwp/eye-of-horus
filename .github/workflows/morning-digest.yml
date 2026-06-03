@@ -1,0 +1,26 @@
+name: Morning Health Digest
+
+on:
+  # 07:00 SAST (South Africa, UTC+2) = 05:00 UTC.
+  schedule:
+    - cron: "0 5 * * *"
+  # Allow manual runs from the Actions tab for testing.
+  workflow_dispatch:
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      SUMMARY_SECRET: ${{ secrets.SUMMARY_SECRET }}
+      EMAIL_PROVIDER_API_KEY: ${{ secrets.EMAIL_PROVIDER_API_KEY }}
+      EMAIL_FROM_ADDRESS: ${{ secrets.EMAIL_FROM_ADDRESS }}
+      DIGEST_TO: ${{ secrets.DIGEST_TO }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Send morning digest
+        run: node scripts/morning-digest.mjs

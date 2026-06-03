@@ -30,15 +30,6 @@ function getInitials(name: string): string {
     .slice(0, 2);
 }
 
-function nowLabel(): string {
-  return new Date().toLocaleString("en-ZA", {
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
 export default function IssueDetailPage({ params }: PageProps) {
   const router = useRouter();
   const { id: issueId } = use(params);
@@ -51,6 +42,7 @@ export default function IssueDetailPage({ params }: PageProps) {
   const [owner, setOwner] = useState("");
   const [note, setNote] = useState("");
   const [notesList, setNotesList] = useState<{ date: string; author: string; text: string }[]>([]);
+  const [notePosting, setNotePosting] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [teamMembers, setTeamMembers] = useState<string[]>(["Unassigned"]);
@@ -83,6 +75,28 @@ export default function IssueDetailPage({ params }: PageProps) {
   useEffect(() => {
     fetchTeamMembers();
   }, [fetchTeamMembers]);
+
+  // Load persisted comments for this issue
+  useEffect(() => {
+    const fetchComments = async () => {
+      if (!issueId) return;
+      try {
+        const res = await apiFetch(`/api/issues/${issueId}/comments`);
+        if (res.ok) {
+          const data = await res.json();
+          const comments = (data.comments ?? []) as Array<{ author_name: string | null; body: string; created_at: string }>;
+          setNotesList(comments.map((c) => ({
+            date: new Date(c.created_at).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }),
+            author: c.author_name ?? "Team",
+            text: c.body,
+          })));
+        }
+      } catch {
+        // Non-fatal — comments just won't load
+      }
+    };
+    fetchComments();
+  }, [issueId]);
 
   useEffect(() => {
     const fetchAnalysis = async () => {
@@ -132,18 +146,37 @@ export default function IssueDetailPage({ params }: PageProps) {
     await updateIssue(issue.id, { owner: newOwner });
   };
 
-  const handlePostNote = (e: React.SyntheticEvent) => {
+  const handlePostNote = async (e: React.SyntheticEvent) => {
     e.preventDefault();
-    if (!note.trim()) return;
-    setNotesList((prev) => [
-      ...prev,
-      {
-        date: nowLabel(),
-        author: currentUser?.name ?? "You",
-        text: note.trim(),
-      },
-    ]);
-    setNote("");
+    const text = note.trim();
+    if (!text || notePosting) return;
+    setNotePosting(true);
+    try {
+      const res = await apiFetch(`/api/issues/${issue.id}/comments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: text }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const c = data.comment as { author_name: string | null; body: string; created_at: string };
+        setNotesList((prev) => [
+          ...prev,
+          {
+            date: new Date(c.created_at).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }),
+            author: c.author_name ?? currentUser?.name ?? "You",
+            text: c.body,
+          },
+        ]);
+        setNote("");
+      } else {
+        showToast("Could not post comment — please try again.");
+      }
+    } catch {
+      showToast("Network error — comment not posted.");
+    } finally {
+      setNotePosting(false);
+    }
   };
 
   const handleQuickResolve = async () => {
@@ -189,9 +222,6 @@ export default function IssueDetailPage({ params }: PageProps) {
         <div style={{ display: "flex", gap: 10 }}>
           <button className="btn" onClick={handleQuickIgnore} type="button">
             <Icon name="x" size={13} /> Ignore
-          </button>
-          <button className="btn" onClick={() => showToast("Create task: copy the issue title into your project management tool.")} type="button">
-            <Icon name="plus" size={13} /> Create task
           </button>
           <button className="btn primary" onClick={handleQuickResolve} type="button">
             <Icon name="check" size={13} /> Mark resolved
@@ -319,7 +349,9 @@ export default function IssueDetailPage({ params }: PageProps) {
                     }}
                   />
                   <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8, gap: 8 }}>
-                    <button className="btn primary sm" type="submit">Post note</button>
+                    <button className="btn primary sm" type="submit" disabled={notePosting || !note.trim()}>
+                      {notePosting ? "Posting…" : "Post note"}
+                    </button>
                   </div>
                 </div>
               </form>

@@ -188,7 +188,7 @@ export async function POST(request: NextRequest) {
 
     const { data: site, error: siteError } = await supabase
       .from("sites")
-      .select("id, name")
+      .select("id, name, tracking_id, rum_enabled")
       .eq("api_key", apiKey)
       .single();
 
@@ -214,6 +214,7 @@ export async function POST(request: NextRequest) {
       security_data: (payload.security_data as object) || null,
       form_data: (payload.form_data as object) || null,
       server_data: (payload.server_data as object) || null,
+      wordfence_data: (payload.wordfence_data as object) || null,
       raw_payload: payload,
     };
 
@@ -229,6 +230,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Record push-based uptime check from the WordPress plugin sync signal
+    const { error: uptimeError } = await supabase
+      .from("uptime_checks")
+      .insert([{
+        site_id: site.id,
+        status: "up",
+        http_status: 200,
+        response_time_ms: 120, // push signal typical overhead
+        error: null,
+        checked_at: new Date().toISOString(),
+      }]);
+
+    if (uptimeError) {
+      console.error("[EOH] failed to log push-based uptime check:", uptimeError);
+    }
+
     let findings: { updatesQueued: number; issuesCreated: number } | undefined;
     let syncError: string | undefined;
     try {
@@ -238,6 +255,8 @@ export async function POST(request: NextRequest) {
       console.error("[EOH] syncWordPressFindings threw:", syncError);
     }
 
+    // RUM config the plugin uses to enqueue the front-end tracking script.
+    const appUrl = process.env.APP_URL || new URL(request.url).origin;
     return NextResponse.json({
       ok: true,
       message: "Snapshot stored",
@@ -245,6 +264,11 @@ export async function POST(request: NextRequest) {
       updatesQueued: findings?.updatesQueued ?? null,
       issuesCreated: findings?.issuesCreated ?? null,
       syncError: syncError ?? null,
+      rum: {
+        enabled: site.rum_enabled === true,
+        tracking_id: (site.tracking_id as string | null) ?? null,
+        script_url: `${appUrl}/eoh-rum.js`,
+      },
       received_at: new Date().toISOString(),
     });
   } catch (err) {

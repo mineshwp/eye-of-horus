@@ -32,7 +32,7 @@ export async function POST(request: NextRequest) {
       .from('issues')
       .select('title, severity, category, status')
       .eq('site_id', siteId)
-      .eq('status', 'open')
+      .neq('status', 'Resolved')
       .order('detected_at', { ascending: false })
       .limit(5),
     supabase

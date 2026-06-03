@@ -35,7 +35,6 @@ interface Site {
   id: string;
   name: string;
   url: string;
-  client_id: string;
 }
 
 interface ClientUser {
@@ -135,15 +134,24 @@ export default function ClientReportsPage() {
         return;
       }
 
-      // 5. Fetch sites for those clients so we can show site name/URL
-      const { data: siteData } = await supabase
-        .from("sites")
-        .select("id, name, url, client_id")
-        .in("client_id", clientIds);
+      // 5. Fetch the sites referenced by those reports so we can show name/URL.
+      //    sites has no client_id column; the RLS policy scopes client reads by
+      //    report.site_id, so look sites up by the ids in the reports above.
+      const siteIds = Array.from(
+        new Set(((reportData as Report[]) || []).map((r) => r.site_id).filter(Boolean)),
+      );
+      let siteData: Site[] = [];
+      if (siteIds.length > 0) {
+        const { data } = await supabase
+          .from("sites")
+          .select("id, name, url")
+          .in("id", siteIds);
+        siteData = (data as Site[]) || [];
+      }
 
       if (!cancelled) {
         setReports((reportData as Report[]) || []);
-        setSites((siteData as Site[]) || []);
+        setSites(siteData);
         setLoading(false);
       }
     }

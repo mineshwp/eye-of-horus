@@ -20,6 +20,10 @@ interface AlertSettings {
   alert_on_ssl_critical: boolean;
   alert_on_critical_issues: boolean;
   dedup_window_hours: number;
+  alert_on_performance_drop?: boolean;
+  alert_on_traffic_drop?: boolean;
+  alert_on_js_errors?: boolean;
+  alert_on_conversion_drop?: boolean;
 }
 
 export default function SettingsPage() {
@@ -134,6 +138,10 @@ export default function SettingsPage() {
           alertOnSslCritical: merged.alert_on_ssl_critical,
           alertOnCriticalIssues: merged.alert_on_critical_issues,
           dedupWindowHours: merged.dedup_window_hours,
+          alertOnPerformanceDrop: merged.alert_on_performance_drop,
+          alertOnTrafficDrop: merged.alert_on_traffic_drop,
+          alertOnJsErrors: merged.alert_on_js_errors,
+          alertOnConversionDrop: merged.alert_on_conversion_drop,
         }),
       });
       if (res.ok) {
@@ -253,6 +261,7 @@ export default function SettingsPage() {
             <SideLink label="Detection rules" active={activeSection === "detection"} onClick={() => setActiveSection("detection")} />
             <SideLink label="Alert routing" active={activeSection === "alerts"} onClick={() => setActiveSection("alerts")} />
             <SideLink label="Integrations" active={activeSection === "integrations"} onClick={() => setActiveSection("integrations")} />
+            <SideLink label="Data & privacy" active={activeSection === "privacy"} onClick={() => setActiveSection("privacy")} />
             <SideLink label="Team & permissions" active={activeSection === "team"} onClick={() => setActiveSection("team")} />
             <SideLink label="API & webhooks" active={activeSection === "api"} onClick={() => setActiveSection("api")} />
             <SideLink label="Billing" active={activeSection === "billing"} onClick={() => setActiveSection("billing")} />
@@ -261,7 +270,8 @@ export default function SettingsPage() {
 
         <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
           {activeSection === "integrations" && <GlobalApiKeysCard />}
-          {activeSection !== "integrations" && <>
+          {activeSection === "privacy" && <DataPrivacyCard />}
+          {activeSection !== "integrations" && activeSection !== "privacy" && <>
           {/* Monitored sites */}
           <div className="card">
             <div className="card-head">
@@ -550,6 +560,10 @@ export default function SettingsPage() {
                     { key: "alert_on_site_down" as const, label: "Site down" },
                     { key: "alert_on_ssl_critical" as const, label: "SSL critical" },
                     { key: "alert_on_critical_issues" as const, label: "Critical issues" },
+                    { key: "alert_on_performance_drop" as const, label: "Performance drop" },
+                    { key: "alert_on_traffic_drop" as const, label: "Traffic drop" },
+                    { key: "alert_on_js_errors" as const, label: "JS error spike" },
+                    { key: "alert_on_conversion_drop" as const, label: "Conversion drop" },
                   ].map(({ key, label }) => (
                     <button
                       key={key}
@@ -1046,3 +1060,106 @@ const ChannelRow = ({ icon, label, sub, on, onToggle }: { icon: string; label: s
     <Toggle on={on} onClick={onToggle} />
   </div>
 );
+
+// ── Data & privacy section ────────────────────────────────────────────────────
+interface AuditEntry {
+  id: string;
+  actor_email: string | null;
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  created_at: string;
+}
+
+const DataPrivacyCard = () => {
+  const [retention, setRetention] = useState("180");
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [entries, setEntries] = useState<AuditEntry[]>([]);
+
+  useEffect(() => {
+    apiFetch("/api/admin/settings")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d?.settings?.rum_retention_days) setRetention(String(d.settings.rum_retention_days)); setLoaded(true); })
+      .catch(() => setLoaded(true));
+    apiFetch("/api/audit/log?limit=100")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d?.entries) setEntries(d.entries); })
+      .catch(() => {});
+  }, []);
+
+  const saveRetention = async () => {
+    setSaving(true);
+    const days = Math.max(7, parseInt(retention, 10) || 180);
+    setRetention(String(days));
+    const res = await apiFetch("/api/admin/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rum_retention_days: String(days) }),
+    }).catch(() => null);
+    if (res?.ok) { setSaved(true); setTimeout(() => setSaved(false), 2500); }
+    setSaving(false);
+  };
+
+  return (
+    <>
+      <div style={{ marginBottom: 16 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>
+          <Icon name="shield" size={15} /> Data &amp; privacy
+        </h2>
+        <p className="muted" style={{ fontSize: 13 }}>
+          Real-user data is collected without cookies, with IP addresses never stored and emails, phone numbers and tokens redacted on ingest. Consent mode and Do-Not-Track are configured per site under each site’s Integrations tab.
+        </p>
+      </div>
+
+      {/* Retention */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="card-head"><h3><Icon name="clock" size={14} /> Real-user data retention</h3></div>
+        <div className="card-pad">
+          <div className="muted" style={{ fontSize: 12.5, marginBottom: 10 }}>
+            Real-user vitals, events and sessions older than this are deleted automatically each day (data minimisation).
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <input
+              type="number" min={7} max={730}
+              className="input" style={{ width: 120 }}
+              value={retention}
+              onChange={(e) => setRetention(e.target.value)}
+              disabled={!loaded}
+            />
+            <span className="muted" style={{ fontSize: 13 }}>days</span>
+            <button className="btn primary sm" onClick={saveRetention} disabled={saving || !loaded} type="button">
+              {saving ? "Saving…" : saved ? "Saved ✓" : "Save"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Audit log */}
+      <div className="card">
+        <div className="card-head">
+          <h3><Icon name="activity" size={14} /> Team action audit log</h3>
+          <span className="muted" style={{ fontSize: 12 }}>last {entries.length} actions</span>
+        </div>
+        <div className="card-pad">
+          {entries.length === 0 ? (
+            <div className="muted" style={{ fontSize: 13 }}>No recorded actions yet. Approvals, settings changes, key rotations and RUM toggles will appear here.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column" }}>
+              {entries.map((e) => (
+                <div key={e.id} style={{ display: "grid", gridTemplateColumns: "150px 1fr 1fr", gap: 12, alignItems: "center", padding: "9px 0", borderBottom: "1px solid var(--border-soft)", fontSize: 12.5 }}>
+                  <span className="dim mono" style={{ fontSize: 11 }}>{new Date(e.created_at).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
+                  <span><Badge tone="ghost">{e.action}</Badge></span>
+                  <span className="muted" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {e.actor_email ?? "system"}{e.target_id ? ` · ${e.target_type ?? ""} ${e.target_id}` : ""}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </>
+  );
+};
