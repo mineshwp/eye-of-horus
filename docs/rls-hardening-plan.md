@@ -1,7 +1,54 @@
 # RLS Hardening Plan (Issue #2)
 
-**Status:** Proposed — not yet implemented. Do not apply piecemeal; the data-access
-refactor and the policy migration must ship together (see Deploy Ordering).
+**Status: IMPLEMENTED** in `supabase/migrations/20260603900000_rls_lockdown_core_tables.sql`
+(not yet applied to live — see "How to apply" below).
+
+## Implementation (chosen approach)
+
+A live preflight showed the system currently has **one user — a single
+`super_admin`** — and the agency dashboard is staff-only. The only writers to
+`sites`/`issues`/`wp_updates`/`activities` are staff (who hold authenticated
+sessions) and server routes (which use the service-role key, bypassing RLS).
+
+Given that, the original "move every write to a new server route" refactor was
+**not necessary** to close the hole and would have added significant churn/risk.
+Instead the migration replaces the public `USING (true)` policies with:
+
+- **Staff** (`get_my_role() IN ('super_admin','admin')`) → `FOR ALL` (read+write)
+  on all four tables. The dashboard's authenticated anon client keeps working
+  unchanged.
+- **Clients** → read-only on `sites` scoped via `reports.site_id` (the portal).
+  No client read on `issues`/`wp_updates`/`activities`.
+- **anon** (no session) → nothing.
+- **service_role** → bypasses RLS; all crons / WordPress sync / checks / report
+  generation are unaffected.
+
+**No application code changed.** Validated by applying the migration inside a
+transaction against the live DB and rolling back: 0 public policies remained,
+the live `super_admin` resolved correctly, and rollback restored the originals.
+
+### How to apply
+1. **Confirm `SUPABASE_SERVICE_ROLE_KEY` is set in production (Vercel).** Server
+   routes fall back to the anon key when it is missing — and the anon key is
+   denied by these policies. This is the only thing that can break the live app.
+2. Apply: `node scripts/apply-migration.mjs 20260603900000_rls_lockdown_core_tables.sql`
+   (or paste it into the Supabase SQL editor).
+3. Verify: log into the dashboard as the staff user (reads/writes work), and
+   confirm a logged-out browser can no longer read `sites`/`issues` via the anon key.
+4. Rollback if needed: the SQL block at the bottom of the migration file.
+
+### Known follow-ups (out of scope for #2)
+- The portal's `sites` query filters by a non-existent `sites.client_id` column;
+  it should query by `id` against the site ids in the client's reports for the
+  new `sites_client_select` policy to return rows. (Currently degrades to empty.)
+- The `reports` RLS `reports_select` policy grants read when `auth.uid() IS NULL`,
+  which an unauthenticated anon-key browser satisfies — worth tightening separately.
+
+---
+
+## Original proposal (superseded — kept for reference)
+
+The notes below describe the heavier server-route approach considered first.
 
 ## Problem
 
