@@ -97,7 +97,7 @@ export default function SignIn() {
         {showForgot ? (
           <form onSubmit={handleForgotPassword} className="signin-card">
             <h2>Reset password</h2>
-            <p className="lead">Enter your work email and we'll send you a reset link.</p>
+            <p className="lead">Enter your work email and we&apos;ll send you a reset link.</p>
 
             {forgotMessage ? (
               <div style={{ color: "var(--cyan)", marginBottom: 14, fontSize: 13, padding: "10px 14px", background: "rgba(0,229,255,0.08)", borderRadius: 8, border: "1px solid rgba(0,229,255,0.2)" }}>
@@ -209,7 +209,7 @@ export default function SignIn() {
               {loading ? "Verifying..." : "Enter Command Centre"} <Icon name="arrow" size={14} />
             </button>
 
-            <div className="divider-or">don't have access?</div>
+            <div className="divider-or">don&apos;t have access?</div>
             <button
               type="button"
               className="oauth-btn"

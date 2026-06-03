@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@supabase/supabase-js";
+import Link from "next/link";
 
 function getSupabaseClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
@@ -174,7 +175,7 @@ export default function ClientPortalLoginPage() {
           }}
         >
           Agency staff?{" "}
-          <a
+          <Link
             href="/"
             style={{
               color: "var(--cyan)",
@@ -183,7 +184,7 @@ export default function ClientPortalLoginPage() {
             }}
           >
             Sign in to the agency dashboard
-          </a>
+          </Link>
         </p>
       </form>
     </div>

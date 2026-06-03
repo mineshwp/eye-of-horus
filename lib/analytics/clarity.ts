@@ -20,8 +20,9 @@ export interface ClarityMetrics {
 export const DEFAULT_CLARITY_ENDPOINT_URL =
   'https://www.clarity.ms/export-data/api/v1/project-live-insights';
 
-// fetchClarityMetrics performs one aggregate request and one URL-dimension request.
-export const CLARITY_API_CALLS_PER_SYNC = 2;
+// fetchClarityMetrics performs a single aggregate request — the response already
+// contains every metric we display (incl. PopularPages), so no extra call is needed.
+export const CLARITY_API_CALLS_PER_SYNC = 1;
 
 export class ClarityApiError extends Error {
   status: number;
@@ -75,19 +76,27 @@ function pick(obj: Record<string, unknown>, ...keys: string[]): number {
   return 0;
 }
 
-// Normalise response — Clarity may return an object, an array, or wrap in { data: [...] }
-function normalise(raw: unknown): Record<string, unknown> | null {
-  if (!raw) return null;
-  if (Array.isArray(raw)) return raw[0] ?? null;
-  if (typeof raw === 'object') {
+// The Clarity Data Export API returns an array of metric objects, each shaped like
+// { metricName: "RageClickCount", information: [ { subTotal, sessionsCount, ... } ] }.
+// Build a lookup keyed by lower-cased metricName so we can read each metric's rows.
+function buildMetricMap(raw: unknown): Map<string, Array<Record<string, unknown>>> {
+  const map = new Map<string, Array<Record<string, unknown>>>();
+  // Tolerate { data: [...] } / { metrics: [...] } wrappers in case the API changes.
+  let arr: unknown = raw;
+  if (raw && !Array.isArray(raw) && typeof raw === 'object') {
     const r = raw as Record<string, unknown>;
-    // Wrapped in { data: [...] } or { metrics: {...} }
-    if (Array.isArray(r.data)) return (r.data as unknown[])[0] as Record<string, unknown> ?? null;
-    if (Array.isArray(r.metrics)) return (r.metrics as unknown[])[0] as Record<string, unknown> ?? null;
-    if (typeof r.metrics === 'object' && r.metrics !== null) return r.metrics as Record<string, unknown>;
-    return r;
+    arr = Array.isArray(r.data) ? r.data : Array.isArray(r.metrics) ? r.metrics : raw;
   }
-  return null;
+  if (!Array.isArray(arr)) return map;
+  for (const m of arr) {
+    if (m && typeof m === 'object') {
+      const entry = m as Record<string, unknown>;
+      if (typeof entry.metricName === 'string' && Array.isArray(entry.information)) {
+        map.set(entry.metricName.toLowerCase(), entry.information as Array<Record<string, unknown>>);
+      }
+    }
+  }
+  return map;
 }
 
 export async function fetchClarityMetrics(
@@ -97,50 +106,42 @@ export async function fetchClarityMetrics(
 ): Promise<ClarityMetrics | null> {
   if (!projectId || !apiKey) return null;
   try {
-    // Site-level aggregate (1 of 10 daily calls)
+    // Single site-level aggregate call (1 of 10 daily calls).
     const raw = await clarityFetch(endpointUrl, apiKey);
-    const data = normalise(raw);
-    if (!data) return null;
+    const metrics = buildMetricMap(raw);
+    if (metrics.size === 0) return null;
 
-    // Per-page breakdown (2 of 10 daily calls)
-    const pageRaw = await clarityFetch(endpointUrl, apiKey, { dimension1: 'URL' });
-    const popularPages: Array<{ url: string; sessions: number; scrollDepth: number }> = [];
+    // First information row for a metric (most metrics return a single aggregate row).
+    const first = (name: string): Record<string, unknown> => metrics.get(name.toLowerCase())?.[0] ?? {};
+    // Frustration signals expose their count under "subTotal".
+    const subTotal = (name: string): number => pick(first(name), 'subTotal', 'sessionsCount');
 
-    if (pageRaw) {
-      // Page data may come back as array or wrapped
-      const pageNorm = normalise(pageRaw);
-      const records: Array<Record<string, unknown>> = Array.isArray(pageRaw)
-        ? (pageRaw as Array<Record<string, unknown>>)
-        : Array.isArray((pageRaw as Record<string, unknown>)?.data)
-          ? ((pageRaw as Record<string, unknown>).data as Array<Record<string, unknown>>)
-          : pageNorm ? [pageNorm] : [];
+    const traffic = first('Traffic');
+    const engagement = first('EngagementTime');
+    const scroll = first('ScrollDepth');
 
-      for (const r of records.slice(0, 10)) {
-        const dims = r.dimensions as Record<string, unknown> | undefined;
-        popularPages.push({
-          url: String(dims?.url ?? dims?.URL ?? r.url ?? r.URL ?? r.pageUrl ?? r.PageUrl ?? ''),
-          sessions: pick(r, 'sessionCount', 'Sessions', 'sessions', 'totalSessionCount'),
-          scrollDepth: pick(r, 'averageScrollDepth', 'AverageScrollDepth', 'scrollDepth', 'ScrollDepth'),
-        });
-      }
-    }
+    // PopularPages is included in the aggregate response (no separate URL-dimension call needed).
+    const popularPages = (metrics.get('popularpages') ?? []).slice(0, 10).map((p) => ({
+      url: String(p.name ?? p.url ?? p.URL ?? ''),
+      sessions: pick(p, 'sessionsCount', 'Sessions', 'sessionCount'),
+      scrollDepth: pick(p, 'averageScrollDepth', 'scrollDepth'),
+    }));
 
     return {
-      // Official field names from Clarity Data Export API docs (camelCase)
-      totalSessions:    pick(data, 'sessionCount',           'Sessions',           'totalSessionCount',   'sessions'),
-      botSessions:      pick(data, 'botSessionCount',        'BotSessionCount',    'botSessions'),
-      distinctUsers:    pick(data, 'distinctUsers',          'DistinctUsers',      'distantUserCount'),   // Clarity has a typo in some versions
-      pagesPerSession:  pick(data, 'pagesPerSession',        'PagesPerSession'),
-      totalPageViews:   pick(data, 'pageViewCount',          'PageViewCount',      'totalPageViews',      'pageViews'),
-      engagementTime:   pick(data, 'averageEngagementTime',  'AverageEngagementTime', 'engagementTime'),
-      activeTime:       pick(data, 'activeTime',             'ActiveTime'),
-      scrollDepth:      pick(data, 'averageScrollDepth',     'AverageScrollDepth', 'scrollDepth'),
-      rageClicks:       pick(data, 'rageClickCount',         'RageClickCount',     'rageClicks'),
-      deadClicks:       pick(data, 'deadClickCount',         'DeadClickCount',     'deadClicks'),
-      quickBacks:       pick(data, 'quickBackCount',         'QuickBackCount',     'quickBacks'),
-      excessiveScrolls: pick(data, 'excessiveScrollCount',   'ExcessiveScrollCount', 'excessiveScrolls'),
-      errorClicks:      pick(data, 'errorClickCount',        'ErrorClickCount',    'errorClicks'),
-      jsErrors:         pick(data, 'jsErrors',               'JsErrors',           'javascriptErrors'),
+      totalSessions:    pick(traffic, 'totalSessionCount', 'sessionCount', 'Sessions'),
+      botSessions:      pick(traffic, 'totalBotSessionCount', 'botSessionCount'),
+      distinctUsers:    pick(traffic, 'distinctUserCount', 'distantUserCount', 'distinctUsers'),
+      pagesPerSession:  pick(traffic, 'pagesPerSessionPercentage', 'PagesPerSessionPercentage', 'pagesPerSession'),
+      totalPageViews:   pick(traffic, 'pageViewCount', 'totalPageViews', 'pageViews'),
+      engagementTime:   pick(engagement, 'totalTime', 'averageEngagementTime', 'engagementTime'),
+      activeTime:       pick(engagement, 'activeTime'),
+      scrollDepth:      pick(scroll, 'averageScrollDepth', 'scrollDepth'),
+      rageClicks:       subTotal('RageClickCount'),
+      deadClicks:       subTotal('DeadClickCount'),
+      quickBacks:       subTotal('QuickbackClick'),
+      excessiveScrolls: subTotal('ExcessiveScroll'),
+      errorClicks:      subTotal('ErrorClickCount'),
+      jsErrors:         subTotal('ScriptErrorCount'),
       popularPages,
       fetchedAt: new Date().toISOString(),
     };

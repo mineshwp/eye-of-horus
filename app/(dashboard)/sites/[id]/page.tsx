@@ -6,6 +6,7 @@ import { useApp, Site, Issue, WpUpdate } from "@/context/AppContext";
 import { supabase } from "@/lib/supabase";
 import { apiFetch } from "@/lib/auth/index";
 import { DEFAULT_CLARITY_ENDPOINT_URL } from "@/lib/analytics/clarity";
+import { formatBytes, type PerfOpportunity } from "@/lib/performance/opportunities";
 import WatchtowerConfig from "@/components/WatchtowerConfig";
 import {
   Icon,
@@ -94,6 +95,64 @@ interface DomainCheckRow {
   checked_at: string;
 }
 
+interface SeoAuditRow {
+  id: string;
+  site_id: string;
+  pages_crawled: number;
+  links_checked: number;
+  broken_links_count: number;
+  missing_titles: number;
+  duplicate_titles: number;
+  missing_descriptions: number;
+  duplicate_descriptions: number;
+  missing_h1: number;
+  thin_content_count: number;
+  images_missing_alt: number;
+  pages_with_schema: number;
+  has_sitemap: boolean | null;
+  has_robots: boolean | null;
+  sitemap_url: string | null;
+  score: number;
+  checked_at: string;
+}
+
+interface BrokenLinkRow {
+  id: string;
+  url: string;
+  status: number;
+  found_on: string | null;
+  link_text: string | null;
+  is_internal: boolean;
+}
+
+interface A11yViolationUI {
+  id: string;
+  impact: "minor" | "moderate" | "serious" | "critical" | null;
+  help: string;
+  description: string;
+  helpUrl: string;
+  nodes: number;
+  sampleTargets: string[];
+}
+
+interface RumKeyCount { key: string; count: number }
+interface RumSummary {
+  hasData: boolean;
+  rumEnabled: boolean;
+  rangeDays: number;
+  vitals: Array<{ metric: string; p75: number | null; rating: "good" | "needs-improvement" | "poor" | null; count: number }>;
+  sessions: {
+    total: number; returning: number; new: number; returningPct: number;
+    devices: RumKeyCount[]; topSources: RumKeyCount[]; entryPages: RumKeyCount[]; exitPages: RumKeyCount[];
+  };
+  events: {
+    counts: Record<string, number>;
+    topCtas: RumKeyCount[]; topOutbound: RumKeyCount[]; topDownloads: RumKeyCount[]; searchTerms: RumKeyCount[];
+    scrollByPage: Array<{ key: string; count: number; samples: number }>;
+    avgScrollDepth: number; rageClicks: number;
+  };
+}
+
 interface PerfMetricRow {
   id: number;
   site_id: string;
@@ -129,7 +188,7 @@ interface PageProps {
 export default function SiteDetailPage({ params }: PageProps) {
   const router = useRouter();
   const { id: siteId } = use(params);
-  const { sites, issues, wpUpdates, runScan, loading } = useApp();
+  const { sites, issues, wpUpdates, runScan, loading, updateIssue } = useApp();
 
   const site = sites.find((s) => s.id === siteId) || sites[0];
   const siteIssues = issues.filter((i) => i.siteId === site?.id);
@@ -235,6 +294,44 @@ export default function SiteDetailPage({ params }: PageProps) {
     if (data) setPerfMetrics(data as PerfMetricRow[]);
   }, [site?.id]);
 
+  // Phase 1b: latest accessibility (axe) violations from Watchtower checks
+  const [a11yViolations, setA11yViolations] = useState<A11yViolationUI[]>([]);
+  const [a11yCheckedAt, setA11yCheckedAt] = useState<string | null>(null);
+  const fetchA11yViolations = useCallback(async () => {
+    if (!site?.id) return;
+    const { data } = await supabase
+      .from("playwright_checks")
+      .select("a11y_violations, checked_at")
+      .eq("site_id", site.id)
+      .gt("a11y_violation_count", 0)
+      .order("checked_at", { ascending: false })
+      .limit(12);
+    if (!data || data.length === 0) {
+      setA11yViolations([]);
+      setA11yCheckedAt(null);
+      return;
+    }
+    // Dedupe by WCAG rule id across recent checks, keeping the highest node count.
+    const byRule = new Map<string, A11yViolationUI>();
+    for (const row of data as Array<{ a11y_violations: A11yViolationUI[]; checked_at: string }>) {
+      for (const v of row.a11y_violations ?? []) {
+        const existing = byRule.get(v.id);
+        if (!existing || v.nodes > existing.nodes) byRule.set(v.id, v);
+      }
+    }
+    const weight = (i: A11yViolationUI["impact"]) => ({ critical: 4, serious: 3, moderate: 2, minor: 1 }[i ?? "minor"] ?? 0);
+    setA11yViolations(Array.from(byRule.values()).sort((a, b) => weight(b.impact) - weight(a.impact)));
+    setA11yCheckedAt((data[0] as { checked_at: string }).checked_at);
+  }, [site?.id]);
+
+  // Phase 3: real-user monitoring summary (field CWV + behaviour)
+  const [rumSummary, setRumSummary] = useState<RumSummary | null>(null);
+  const fetchRumSummary = useCallback(async () => {
+    if (!site?.id) return;
+    const res = await apiFetch(`/api/rum/summary?siteId=${site.id}&days=30`).catch(() => null);
+    if (res?.ok) setRumSummary(await res.json());
+  }, [site?.id]);
+
   const [formChecks, setFormChecks] = useState<FormCheckRow[]>([]);
   const fetchFormChecks = useCallback(async () => {
     if (!site?.id) return;
@@ -246,6 +343,47 @@ export default function SiteDetailPage({ params }: PageProps) {
       .limit(30);
     if (data) setFormChecks(data as FormCheckRow[]);
   }, [site?.id]);
+
+  // Phase 1a: SEO crawl audit
+  const [seoAudit, setSeoAudit] = useState<SeoAuditRow | null>(null);
+  const [seoBrokenLinks, setSeoBrokenLinks] = useState<BrokenLinkRow[]>([]);
+  const [seoCrawling, setSeoCrawling] = useState(false);
+
+  const fetchSeoAudit = useCallback(async () => {
+    if (!site?.id) return;
+    const { data } = await supabase
+      .from("seo_audits")
+      .select("*")
+      .eq("site_id", site.id)
+      .order("checked_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (data) {
+      setSeoAudit(data as SeoAuditRow);
+      const { data: links } = await supabase
+        .from("broken_links")
+        .select("*")
+        .eq("audit_id", (data as SeoAuditRow).id)
+        .order("is_internal", { ascending: false })
+        .limit(100);
+      setSeoBrokenLinks((links as BrokenLinkRow[]) ?? []);
+    } else {
+      setSeoAudit(null);
+      setSeoBrokenLinks([]);
+    }
+  }, [site?.id]);
+
+  const runSeoCrawl = useCallback(async () => {
+    if (!site?.id) return;
+    setSeoCrawling(true);
+    await apiFetch('/api/seo/crawl', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ siteId: site.id }),
+    }).catch(() => null);
+    await fetchSeoAudit();
+    setSeoCrawling(false);
+  }, [site?.id, fetchSeoAudit]);
 
   // Phase 7: AI state
   const [aiSummary, setAiSummary] = useState<string | null>(null);
@@ -357,12 +495,15 @@ export default function SiteDetailPage({ params }: PageProps) {
     fetchDomainCheck();
     fetchPerfMetrics();
     fetchFormChecks();
-  }, [fetchUptimeHistory, fetchWpSnapshot, fetchAnalyticsSnapshot, fetchAiSummary, fetchDomainCheck, fetchPerfMetrics, fetchFormChecks]);
+    fetchSeoAudit();
+    fetchA11yViolations();
+    fetchRumSummary();
+  }, [fetchUptimeHistory, fetchWpSnapshot, fetchAnalyticsSnapshot, fetchAiSummary, fetchDomainCheck, fetchPerfMetrics, fetchFormChecks, fetchSeoAudit, fetchA11yViolations, fetchRumSummary]);
 
   const searchParams = useSearchParams();
   const [tab, setTab] = useState<string>(() => {
     const t = searchParams?.get('tab') ?? '';
-    const valid = ["Overview","Issues","Analytics","SEO","Marketing","WordPress","Performance","Security","Forms","History","Integrations"];
+    const valid = ["Overview","Issues","Analytics","SEO","Marketing","Business","WordPress","Performance","Security","Forms","History","Integrations"];
     return valid.includes(t) ? t : "Overview";
   });
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -528,7 +669,7 @@ export default function SiteDetailPage({ params }: PageProps) {
       </div>
 
       <Tabs
-        tabs={["Overview", "Issues", "Analytics", "SEO", "Marketing", "WordPress", "Performance", "Security", "Forms", "History", "Visual changes", "Integrations"]}
+        tabs={["Overview", "Issues", "Analytics", "SEO", "Marketing", "Business", "WordPress", "Performance", "Security", "Forms", "History", "Visual changes", "Integrations"]}
         active={tab}
         onChange={setTab}
       />
@@ -889,11 +1030,12 @@ export default function SiteDetailPage({ params }: PageProps) {
         )}
 
         {tab === "Issues" && (
-          <IssuesTab site={site} issues={combinedSiteIssues} router={router} onNavigateToWp={() => setTab("WordPress")} />
+          <IssuesTab site={site} issues={combinedSiteIssues} router={router} onNavigateToWp={() => setTab("WordPress")} onToggleComplete={(issueId, status) => updateIssue(issueId, { status })} />
         )}
-        {tab === "Analytics" && <AnalyticsTab site={site} snapshot={analyticsSnapshot} onRefresh={refreshAnalytics} refreshing={analyticsRefreshing} />}
-        {tab === "SEO" && <SeoTab site={site} snapshot={analyticsSnapshot} onRefresh={refreshAnalytics} refreshing={analyticsRefreshing} />}
+        {tab === "Analytics" && <AnalyticsTab site={site} snapshot={analyticsSnapshot} onRefresh={refreshAnalytics} refreshing={analyticsRefreshing} rum={rumSummary} />}
+        {tab === "SEO" && <SeoTab site={site} snapshot={analyticsSnapshot} onRefresh={refreshAnalytics} refreshing={analyticsRefreshing} audit={seoAudit} brokenLinks={seoBrokenLinks} onCrawl={runSeoCrawl} crawling={seoCrawling} />}
         {tab === "Marketing" && <MarketingTab site={site} snapshot={analyticsSnapshot} />}
+        {tab === "Business" && <BusinessTab site={site} wpSnapshot={wpSnapshot} rum={rumSummary} />}
         {tab === "WordPress" && (
           <WordPressTab
             site={site}
@@ -903,6 +1045,7 @@ export default function SiteDetailPage({ params }: PageProps) {
             newKey={newlyGeneratedKey}
             onGenerateKey={generateApiKey}
             updates={siteUpdates}
+            onRefreshSnapshot={fetchWpSnapshot}
           />
         )}
 
@@ -913,6 +1056,9 @@ export default function SiteDetailPage({ params }: PageProps) {
             issues={siteIssues}
             siteId={site.id}
             onScanComplete={fetchPerfMetrics}
+            a11yViolations={a11yViolations}
+            a11yCheckedAt={a11yCheckedAt}
+            rum={rumSummary}
           />
         )}
 
@@ -1465,9 +1611,10 @@ interface IssuesTabProps {
   issues: Issue[];
   router: any;
   onNavigateToWp: () => void;
+  onToggleComplete: (issueId: string, status: string) => void;
 }
 
-const IssuesTab = ({ site, issues, router, onNavigateToWp }: IssuesTabProps) => {
+const IssuesTab = ({ site, issues, router, onNavigateToWp, onToggleComplete }: IssuesTabProps) => {
   const [sev, setSev] = useState("All");
   const [expanded, setExpanded] = useState<string | null>(issues[0]?.id || null);
   const [groupByCategory, setGroupByCategory] = useState(false);
@@ -1551,7 +1698,7 @@ const IssuesTab = ({ site, issues, router, onNavigateToWp }: IssuesTabProps) => 
           <div key={cat} style={{ display: "flex", flexDirection: "column", gap: 14, marginBottom: 8 }}>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)", paddingLeft: 2 }}>{cat}</div>
             {catIssues.map((issue) => (
-              <IssueAiCard key={issue.id} issue={issue} site={site} expanded={expanded === issue.id} onToggle={() => setExpanded(expanded === issue.id ? null : issue.id)} onOpen={() => issue.id.startsWith("wp-update-") ? onNavigateToWp() : router.push(`/issues/${issue.id}`)} />
+              <IssueAiCard key={issue.id} issue={issue} site={site} expanded={expanded === issue.id} onToggle={() => setExpanded(expanded === issue.id ? null : issue.id)} onOpen={() => issue.id.startsWith("wp-update-") ? onNavigateToWp() : router.push(`/issues/${issue.id}`)} onToggleComplete={onToggleComplete} />
             ))}
           </div>
         ))
@@ -1576,12 +1723,14 @@ const IssueAiCard = ({
   expanded,
   onToggle,
   onOpen,
+  onToggleComplete,
 }: {
   issue: Issue;
   site: Site;
   expanded: boolean;
   onToggle: () => void;
   onOpen: () => void;
+  onToggleComplete?: (issueId: string, status: string) => void;
 }) => {
   const fix = AI_FIX_LIBRARY[issue.id as keyof typeof AI_FIX_LIBRARY] || AI_FIX_LIBRARY.default;
   const [cardToast, setCardToast] = useState<string | null>(null);
@@ -1649,7 +1798,23 @@ const IssueAiCard = ({
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
             <SeverityChip level={issue.severity} />
             <Badge tone="ghost">{issue.category}</Badge>
-            <Badge tone="ghost">{issue.status}</Badge>
+            <Badge tone={issue.status === "Resolved" ? "ok" : "ghost"}>{issue.status}</Badge>
+            {onToggleComplete && !issue.id.startsWith("wp-update-") && (
+              <button
+                type="button"
+                title={issue.status === "Resolved" ? "Reopen issue" : "Mark complete"}
+                onClick={(e) => { e.stopPropagation(); onToggleComplete(issue.id, issue.status === "Resolved" ? "New" : "Resolved"); }}
+                style={{
+                  width: 20, height: 20, flexShrink: 0, cursor: "pointer",
+                  display: "grid", placeItems: "center", borderRadius: 6,
+                  background: issue.status === "Resolved" ? "var(--green)" : "transparent",
+                  border: `1.5px solid ${issue.status === "Resolved" ? "var(--green)" : "var(--border-mid)"}`,
+                  color: issue.status === "Resolved" ? "#04110a" : "var(--text-dim)", padding: 0,
+                }}
+              >
+                {issue.status === "Resolved" && <Icon name="check" size={12} />}
+              </button>
+            )}
           </div>
           <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 16, marginBottom: 2 }}>
             {issue.title}
@@ -1829,6 +1994,7 @@ const AnalyticsTab = ({
   snapshot,
   onRefresh,
   refreshing,
+  rum = null,
 }: {
   site?: { id: string; url: string };
   snapshot?: {
@@ -1839,12 +2005,37 @@ const AnalyticsTab = ({
   } | null;
   onRefresh?: () => void;
   refreshing?: boolean;
+  rum?: RumSummary | null;
 }) => {
   const [range, setRange] = useState("Last 28 days");
   const clarity = snapshot?.clarity?.metrics as Record<string, unknown> | null | undefined;
   const clarityConnected = !!(snapshot?.integration?.clarity_project_id);
   const [analyticsToast, setAnalyticsToast] = useState<string | null>(null);
   const showAnalyticsToast = (msg: string) => { setAnalyticsToast(msg); setTimeout(() => setAnalyticsToast(null), 3000); };
+
+  // Phase 5: click heatmap
+  const [hmPages, setHmPages] = useState<RumKeyCount[]>([]);
+  const [hmPath, setHmPath] = useState<string>("");
+  const [hmPoints, setHmPoints] = useState<Array<{ x: number; y: number }>>([]);
+  const [hmShot, setHmShot] = useState<string | null>(null);
+  const [hmLoading, setHmLoading] = useState(false);
+  const hmSiteId = _site?.id;
+  useEffect(() => {
+    if (!hmSiteId || !rum?.hasData) return;
+    apiFetch(`/api/rum/heatmap?siteId=${hmSiteId}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d?.pages?.length) { setHmPages(d.pages); setHmPath((p) => p || d.pages[0].key); } })
+      .catch(() => {});
+  }, [hmSiteId, rum?.hasData]);
+  useEffect(() => {
+    if (!hmSiteId || !hmPath) return;
+    setHmLoading(true);
+    apiFetch(`/api/rum/heatmap?siteId=${hmSiteId}&path=${encodeURIComponent(hmPath)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { setHmPoints(d?.points ?? []); setHmShot(d?.screenshotUrl ?? null); })
+      .catch(() => {})
+      .finally(() => setHmLoading(false));
+  }, [hmSiteId, hmPath]);
   const isConnected = !!(snapshot?.integration?.ga_property_id);
   type GAMetricsType = { sessions?: number; users?: number; newUsers?: number; engagementRate?: number; avgEngagementTimeSec?: number; pageviews?: number; topPages?: Array<{ path: string; sessions: number }>; channels?: Array<{ name: string; sessions: number }>; devices?: Array<{ device: string; sessions: number; pct: number }>; topCountries?: Array<{ country: string; sessions: number }>; previousPeriod?: { sessions: number; users: number; pageviews: number } | null };
   const gaSnap = snapshot?.ga as { metrics?: GAMetricsType; period_start?: string; period_end?: string } | null;
@@ -1855,8 +2046,129 @@ const AnalyticsTab = ({
     const d = ((cur - prev) / prev) * 100;
     return { val: `${d > 0 ? "+" : ""}${d.toFixed(1)}%`, dir: d >= 0 ? "up" : "down" };
   };
+  const rumList = (title: string, icon: string, items: RumKeyCount[], opts?: { mono?: boolean; truncate?: boolean }) => (
+    <div className="card">
+      <div className="card-head"><h3><Icon name={icon} size={14} /> {title}</h3></div>
+      <div className="card-pad">
+        {items.length === 0 ? (
+          <div className="muted" style={{ fontSize: 12 }}>No data yet.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+            {items.map((it, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5 }}>
+                <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: opts?.mono ? "var(--font-mono)" : "inherit", color: "var(--text-secondary)" }} title={it.key}>{it.key}</span>
+                <span style={{ fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{it.count.toLocaleString()}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
   return (
     <>
+      {/* Visitor behaviour — first-party data from the Eye of Horus tracking script */}
+      <div style={{ marginBottom: 18 }}>
+        <div className="label-strip" style={{ marginBottom: 10 }}>Visitor behaviour · Eye of Horus tracking</div>
+        {!rum || !rum.hasData ? (
+          <div className="card" style={{ padding: "16px 18px", display: "flex", alignItems: "center", gap: 14, background: "rgba(0,229,255,0.04)", border: "1px solid rgba(0,229,255,0.15)" }}>
+            <Icon name="eye" size={16} style={{ color: "#00E5FF" }} />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 500, marginBottom: 2 }}>No first-party behaviour data yet</div>
+              <div className="muted" style={{ fontSize: 12 }}>
+                {rum && !rum.rumEnabled
+                  ? "Real-user monitoring is off. Enable it under Integrations → Real-User Monitoring to track clicks, CTAs, on-site search, and returning visitors — no third-party tools needed."
+                  : "Once the tracking script is collecting, you'll see clicks, CTAs, on-site search terms, downloads, and returning-vs-new visitors here."}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="grid-4" style={{ marginBottom: 14 }}>
+              {[
+                { label: "Sessions", value: rum.sessions.total.toLocaleString(), sub: `last ${rum.rangeDays}d` },
+                { label: "Returning", value: `${rum.sessions.returningPct}%`, sub: `${rum.sessions.returning.toLocaleString()} of ${rum.sessions.total.toLocaleString()}` },
+                { label: "Avg scroll depth", value: `${rum.events.avgScrollDepth}%`, sub: "per page" },
+                { label: "Rage clicks", value: rum.events.rageClicks.toLocaleString(), sub: "frustration signal", bad: rum.events.rageClicks > 0 },
+              ].map((k) => (
+                <div key={k.label} className="card" style={{ padding: "14px 16px" }}>
+                  <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>{k.label}</div>
+                  <div style={{ fontSize: 24, fontWeight: 700, color: k.bad ? "var(--red)" : "var(--text-primary)", fontFamily: "var(--font-display)" }}>{k.value}</div>
+                  <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>{k.sub}</div>
+                </div>
+              ))}
+            </div>
+            <div className="grid-2" style={{ marginBottom: 14 }}>
+              {rumList("Top CTAs clicked", "bolt", rum.events.topCtas)}
+              {rumList("On-site search terms", "search", rum.events.searchTerms)}
+            </div>
+            <div className="grid-2" style={{ marginBottom: 14 }}>
+              {rumList("Outbound links", "activity", rum.events.topOutbound, { mono: true })}
+              {rumList("Downloads", "download", rum.events.topDownloads, { mono: true })}
+            </div>
+            <div className="grid-2" style={{ marginBottom: 14 }}>
+              {rumList("Entry pages", "activity", rum.sessions.entryPages, { mono: true })}
+              {rumList("Exit pages", "activity", rum.sessions.exitPages, { mono: true })}
+            </div>
+            <div className="grid-2" style={{ marginBottom: 14 }}>
+              {rumList("Devices", "monitor", rum.sessions.devices)}
+              {rumList("Traffic sources", "search", rum.sessions.topSources)}
+            </div>
+            {rum.events.scrollByPage.length > 0 && (
+              <div className="card">
+                <div className="card-head"><h3><Icon name="activity" size={14} /> Scroll depth by page</h3><span className="h-sub">avg % reached</span></div>
+                <div className="card-pad" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                  {rum.events.scrollByPage.map((p, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 12.5 }}>
+                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "var(--font-mono)", color: "var(--text-secondary)" }} title={p.key}>{p.key}</span>
+                      <div style={{ width: 160, height: 8, background: "var(--bg-inset)", borderRadius: 4, overflow: "hidden", flexShrink: 0 }}>
+                        <div style={{ width: `${Math.min(100, p.count)}%`, height: "100%", background: p.count >= 70 ? "var(--green)" : p.count >= 40 ? "var(--amber)" : "var(--red)" }} />
+                      </div>
+                      <span style={{ width: 38, textAlign: "right", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{p.count}%</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {hmPages.length > 0 && (
+              <div className="card" style={{ marginTop: 14 }}>
+                <div className="card-head">
+                  <h3><Icon name="eye" size={14} /> Click heatmap</h3>
+                  <select
+                    value={hmPath}
+                    onChange={(e) => setHmPath(e.target.value)}
+                    style={{ marginLeft: "auto", background: "var(--bg-card)", border: "1px solid var(--border-mid)", borderRadius: 6, color: "var(--text-primary)", fontSize: 12, padding: "4px 8px", maxWidth: 280 }}
+                  >
+                    {hmPages.map((p) => <option key={p.key} value={p.key}>{p.key} ({p.count})</option>)}
+                  </select>
+                </div>
+                <div className="card-pad">
+                  {hmLoading ? (
+                    <div className="muted" style={{ fontSize: 13 }}>Loading clicks…</div>
+                  ) : hmPoints.length === 0 ? (
+                    <div className="muted" style={{ fontSize: 13 }}>No click positions recorded for this page yet.</div>
+                  ) : (
+                    <>
+                      <div style={{ position: "relative", width: "100%", aspectRatio: "16 / 9", borderRadius: 8, overflow: "hidden", border: "1px solid var(--border-soft)", background: hmShot ? "#000" : "var(--bg-inset)" }}>
+                        {hmShot && <img src={hmShot} alt="page" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", objectPosition: "top", opacity: 0.55 }} />}
+                        {hmPoints.map((pt, i) => (
+                          <span key={i} style={{ position: "absolute", left: `${pt.x}%`, top: `${pt.y}%`, width: 18, height: 18, marginLeft: -9, marginTop: -9, borderRadius: "50%", background: "radial-gradient(circle, rgba(255,80,40,0.55) 0%, rgba(255,80,40,0) 70%)", pointerEvents: "none" }} />
+                        ))}
+                      </div>
+                      <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
+                        {hmPoints.length} clicks · positions are viewport-relative{hmShot ? ", overlaid on the latest Watchtower screenshot" : " (no screenshot captured yet)"}.
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
       {!isConnected && (
         <div className="card" style={{ marginBottom: 18, padding: "14px 18px", display: "flex", alignItems: "center", gap: 14, background: "rgba(217,160,91,0.06)", border: "1px solid rgba(217,160,91,0.2)" }}>
           <Icon name="activity" size={16} style={{ color: "var(--gold)" }} />
@@ -2077,11 +2389,14 @@ const AnalyticsTab = ({
 // ============ SEO Tab Component ============
 
 const SeoTab = ({
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   site,
   snapshot,
   onRefresh,
   refreshing,
+  audit,
+  brokenLinks,
+  onCrawl,
+  crawling,
 }: {
   site?: { id: string };
   snapshot?: {
@@ -2092,6 +2407,10 @@ const SeoTab = ({
   } | null;
   onRefresh?: () => void;
   refreshing?: boolean;
+  audit?: SeoAuditRow | null;
+  brokenLinks?: BrokenLinkRow[];
+  onCrawl?: () => void;
+  crawling?: boolean;
 }) => {
   const gsc = snapshot?.gsc as { queries?: unknown[]; pages?: unknown[]; metrics?: Record<string, unknown> } | null | undefined;
   const isConnected = !!(snapshot?.integration?.gsc_site_url);
@@ -2141,6 +2460,81 @@ const SeoTab = ({
 
   return (
     <>
+      {/* On-site crawl audit — broken links, sitemap/robots, meta, schema, alt text, thin content */}
+      <div className="card" style={{ marginBottom: 18 }}>
+        <div className="card-head">
+          <h3><Icon name="search" size={14} /> On-site SEO crawl</h3>
+          <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center" }}>
+            {audit && <span className="h-sub">Last crawl: {new Date(audit.checked_at).toLocaleString()}</span>}
+            {onCrawl && (
+              <button className="btn sm primary" type="button" onClick={onCrawl} disabled={crawling}>
+                <Icon name="refresh" size={12} /> {crawling ? "Crawling…" : audit ? "Re-crawl site" : "Run crawl"}
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="card-pad">
+          {!audit ? (
+            <div className="muted" style={{ fontSize: 13, padding: "8px 0" }}>
+              No crawl yet. Run a crawl to scan the site for broken links, missing/duplicate metadata,
+              schema, image alt text, thin content, and sitemap/robots.txt validity.
+            </div>
+          ) : (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap", marginBottom: 16 }}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                  <span style={{ fontSize: 34, fontWeight: 700, color: audit.score >= 90 ? "#22C55E" : audit.score >= 70 ? "#D9A05B" : "#EF4444" }}>{audit.score}</span>
+                  <span className="muted" style={{ fontSize: 13 }}>/ 100 SEO health</span>
+                </div>
+                <Badge tone="ghost">{audit.pages_crawled} pages crawled</Badge>
+                <Badge tone="ghost">{audit.links_checked} links checked</Badge>
+                <Badge tone={audit.has_sitemap === false ? "crit" : "ok"} dot>{audit.has_sitemap === false ? "No sitemap.xml" : "Sitemap found"}</Badge>
+                <Badge tone={audit.has_robots === false ? "high" : "ok"} dot>{audit.has_robots === false ? "No robots.txt" : "robots.txt found"}</Badge>
+              </div>
+
+              <div className="grid-4" style={{ marginBottom: 4 }}>
+                {[
+                  { label: "Broken links", value: audit.broken_links_count, bad: audit.broken_links_count > 0 },
+                  { label: "Missing titles", value: audit.missing_titles, bad: audit.missing_titles > 0 },
+                  { label: "Duplicate titles", value: audit.duplicate_titles, bad: audit.duplicate_titles > 0 },
+                  { label: "Missing meta desc", value: audit.missing_descriptions, bad: audit.missing_descriptions > 0 },
+                  { label: "Missing H1", value: audit.missing_h1, bad: audit.missing_h1 > 0 },
+                  { label: "Thin content", value: audit.thin_content_count, bad: audit.thin_content_count > 0 },
+                  { label: "Images missing alt", value: audit.images_missing_alt, bad: audit.images_missing_alt > 0 },
+                  { label: "Pages with schema", value: audit.pages_with_schema, bad: audit.pages_with_schema === 0 },
+                ].map((m) => (
+                  <div key={m.label} className="card" style={{ padding: "12px 14px", background: "rgba(255,255,255,0.02)" }}>
+                    <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>{m.label}</div>
+                    <div style={{ fontSize: 22, fontWeight: 600, color: m.bad ? "#EF4444" : "#22C55E" }}>{m.value}</div>
+                  </div>
+                ))}
+              </div>
+
+              {brokenLinks && brokenLinks.length > 0 && (
+                <div style={{ marginTop: 16 }}>
+                  <div className="label-strip" style={{ marginBottom: 8 }}>Broken links ({brokenLinks.length})</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 64px", gap: 8, fontSize: 12, alignItems: "center" }}>
+                    <div className="label-strip">Link</div>
+                    <div className="label-strip">Found on</div>
+                    <div className="label-strip" style={{ textAlign: "right" }}>Status</div>
+                    {brokenLinks.slice(0, 25).map((b) => (
+                      <React.Fragment key={b.id}>
+                        <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={b.url}>
+                          {b.is_internal ? <Badge tone="high">int</Badge> : <Badge tone="ghost">ext</Badge>} <a href={b.url} target="_blank" rel="noreferrer" style={{ color: "#9bb" }}>{b.url}</a>
+                        </div>
+                        <div className="muted" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={b.found_on ?? ""}>{b.found_on ?? "—"}</div>
+                        <div style={{ textAlign: "right", color: "#EF4444", fontWeight: 600 }}>{b.status === 0 ? "ERR" : b.status}</div>
+                      </React.Fragment>
+                    ))}
+                  </div>
+                  {brokenLinks.length > 25 && <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>+ {brokenLinks.length - 25} more</div>}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+
       {!isConnected && (
         <div className="card" style={{ marginBottom: 18, padding: "14px 18px", display: "flex", alignItems: "center", gap: 14, background: "rgba(0,229,255,0.04)", border: "1px solid rgba(0,229,255,0.15)" }}>
           <Icon name="search" size={16} style={{ color: "#00E5FF" }} />
@@ -2386,6 +2780,190 @@ const SeoTab = ({
         <div style={{ position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)", background: "var(--bg-card)", border: "1px solid var(--border-soft)", borderRadius: 10, padding: "10px 20px", fontSize: 13, fontWeight: 500, color: "var(--text-primary)", boxShadow: "0 4px 24px rgba(0,0,0,0.5)", zIndex: 9999, pointerEvents: "none" }}>{seoToast}</div>
       )}
     </>
+  );
+};
+
+// ============ Business Tab Component ============
+
+interface BusinessCampaign { name: string; landing_path: string; monthly_spend: number }
+interface BusinessCompetitor { name: string; url: string; performance?: number | null; seo?: number | null; checked_at?: string | null }
+interface BusinessInputs {
+  site_id: string;
+  currency: string;
+  conversion_type: "leads" | "sales";
+  avg_conversion_value: number;
+  monthly_ad_spend: number;
+  monthly_retainer: number;
+  target_conversion_rate: number;
+  qualified_leads: number;
+  campaigns: BusinessCampaign[];
+  competitors: BusinessCompetitor[];
+  notes: string | null;
+}
+
+const BusinessTab = ({
+  site,
+  wpSnapshot,
+  rum,
+}: {
+  site: { id: string; perf?: number };
+  wpSnapshot: WpSnapshot | null;
+  rum: RumSummary | null;
+}) => {
+  const [b, setB] = useState<BusinessInputs | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [benchIdx, setBenchIdx] = useState<number | null>(null);
+
+  useEffect(() => {
+    apiFetch(`/api/sites/${site.id}/business`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d?.business) setB(d.business as BusinessInputs); })
+      .catch(() => {});
+  }, [site.id]);
+
+  const inputStyle: React.CSSProperties = { background: "var(--bg-inset)", border: "1px solid var(--border-mid)", borderRadius: 8, color: "var(--text-primary)", fontSize: 13, padding: "8px 12px", width: "100%", outline: "none", fontFamily: "inherit" };
+
+  const save = async (next?: BusinessInputs) => {
+    const payload = next ?? b;
+    if (!payload) return;
+    setSaving(true);
+    const res = await apiFetch(`/api/sites/${site.id}/business`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    }).catch(() => null);
+    if (res?.ok) { const d = await res.json(); setB(d.business); setSaved(true); setTimeout(() => setSaved(false), 2000); }
+    setSaving(false);
+  };
+
+  if (!b) return <div className="card card-pad" style={{ textAlign: "center", padding: 40 }}><span className="muted">Loading business inputs…</span></div>;
+
+  const money = (n: number) => `${b.currency} ${Math.round(n).toLocaleString()}`;
+  const set = (patch: Partial<BusinessInputs>) => setB({ ...b, ...patch });
+
+  // Conversions this month from WordPress form submissions.
+  const conversions = (wpSnapshot?.form_data ?? []).reduce((sum, f) => sum + (f.completed_month ?? f.submissions_month ?? 0), 0);
+  const revenue = conversions * b.avg_conversion_value;
+  const cost = b.monthly_ad_spend + b.monthly_retainer;
+  const roi = cost > 0 ? Math.round(((revenue - cost) / cost) * 100) : null;
+  const cpc = conversions > 0 ? cost / conversions : null;
+  const sessionsFor = (path: string) => rum?.sessions.entryPages.find((e) => e.key === path)?.count ?? 0;
+
+  const runBenchmark = async (idx: number) => {
+    const c = b.competitors[idx];
+    if (!c?.url) return;
+    setBenchIdx(idx);
+    const res = await apiFetch(`/api/sites/${site.id}/business/benchmark`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: c.url }),
+    }).catch(() => null);
+    if (res?.ok) {
+      const d = await res.json();
+      const competitors = b.competitors.map((x, i) => i === idx ? { ...x, performance: d.performance, seo: d.seo, checked_at: d.checked_at } : x);
+      await save({ ...b, competitors });
+    }
+    setBenchIdx(null);
+  };
+
+  const field = (label: string, value: number, key: keyof BusinessInputs, prefix?: string) => (
+    <div>
+      <label className="muted" style={{ fontSize: 11, display: "block", marginBottom: 4 }}>{label}{prefix ? ` (${prefix})` : ""}</label>
+      <input type="number" min={0} style={inputStyle} value={value}
+        onChange={(e) => set({ [key]: parseFloat(e.target.value) || 0 } as unknown as Partial<BusinessInputs>)} />
+    </div>
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      {/* ROI summary */}
+      <div className="grid-4">
+        {[
+          { label: "Conversions", value: conversions.toLocaleString(), sub: `${b.conversion_type} this month` },
+          { label: "Est. revenue", value: money(revenue), sub: `${conversions} × ${money(b.avg_conversion_value)}` },
+          { label: "Total cost", value: money(cost), sub: "ad spend + retainer" },
+          { label: "ROI", value: roi == null ? "—" : `${roi}%`, sub: cpc != null ? `${money(cpc)} / conversion` : "set costs", good: roi != null && roi >= 0, bad: roi != null && roi < 0 },
+        ].map((k) => (
+          <div key={k.label} className="card" style={{ padding: "14px 16px" }}>
+            <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>{k.label}</div>
+            <div style={{ fontSize: 22, fontWeight: 700, fontFamily: "var(--font-display)", color: k.bad ? "var(--red)" : k.good ? "var(--green)" : "var(--text-primary)" }}>{k.value}</div>
+            <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>{k.sub}</div>
+          </div>
+        ))}
+      </div>
+      <div className="muted" style={{ fontSize: 11, marginTop: -8 }}>
+        Estimates use admin-entered values × actual form submissions. Update the inputs below as the client supplies figures.
+      </div>
+
+      {/* Inputs */}
+      <div className="card">
+        <div className="card-head"><h3><Icon name="settings" size={14} /> Client business inputs</h3>
+          <button className="btn sm primary" style={{ marginLeft: "auto" }} onClick={() => save()} disabled={saving} type="button">{saving ? "Saving…" : saved ? "Saved ✓" : "Save"}</button>
+        </div>
+        <div className="card-pad" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
+          <div>
+            <label className="muted" style={{ fontSize: 11, display: "block", marginBottom: 4 }}>Currency</label>
+            <input style={inputStyle} value={b.currency} onChange={(e) => set({ currency: e.target.value.slice(0, 8) })} />
+          </div>
+          <div>
+            <label className="muted" style={{ fontSize: 11, display: "block", marginBottom: 4 }}>Conversion type</label>
+            <select style={inputStyle} value={b.conversion_type} onChange={(e) => set({ conversion_type: e.target.value as "leads" | "sales" })}>
+              <option value="leads">Leads</option>
+              <option value="sales">Sales</option>
+            </select>
+          </div>
+          {field("Avg value / conversion", b.avg_conversion_value, "avg_conversion_value", b.currency)}
+          {field("Monthly ad spend", b.monthly_ad_spend, "monthly_ad_spend", b.currency)}
+          {field("Monthly retainer", b.monthly_retainer, "monthly_retainer", b.currency)}
+          {field("Target conversion rate", b.target_conversion_rate, "target_conversion_rate", "%")}
+          {field("Qualified leads (manual)", b.qualified_leads, "qualified_leads")}
+        </div>
+      </div>
+
+      {/* Campaigns */}
+      <div className="card">
+        <div className="card-head"><h3><Icon name="bolt" size={14} /> Campaign landing pages</h3>
+          <button className="btn sm ghost" style={{ marginLeft: "auto" }} type="button" onClick={() => set({ campaigns: [...b.campaigns, { name: "", landing_path: "/", monthly_spend: 0 }] })}><Icon name="plus" size={12} /> Add</button>
+        </div>
+        <div className="card-pad" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {b.campaigns.length === 0 && <div className="muted" style={{ fontSize: 12 }}>No campaigns yet. Add a campaign with its landing page to track traffic and estimated return.</div>}
+          {b.campaigns.map((c, i) => {
+            const sess = sessionsFor(c.landing_path);
+            const estRev = sess * (b.target_conversion_rate / 100) * b.avg_conversion_value;
+            const roas = c.monthly_spend > 0 ? (estRev / c.monthly_spend).toFixed(2) : "—";
+            return (
+              <div key={i} style={{ display: "grid", gridTemplateColumns: "1.4fr 1.4fr 1fr auto auto", gap: 8, alignItems: "center" }}>
+                <input style={inputStyle} placeholder="Campaign name" value={c.name} onChange={(e) => set({ campaigns: b.campaigns.map((x, j) => j === i ? { ...x, name: e.target.value } : x) })} />
+                <input style={inputStyle} placeholder="/landing-page" value={c.landing_path} onChange={(e) => set({ campaigns: b.campaigns.map((x, j) => j === i ? { ...x, landing_path: e.target.value } : x) })} />
+                <input style={inputStyle} type="number" min={0} placeholder="Spend" value={c.monthly_spend} onChange={(e) => set({ campaigns: b.campaigns.map((x, j) => j === i ? { ...x, monthly_spend: parseFloat(e.target.value) || 0 } : x) })} />
+                <span className="muted" style={{ fontSize: 11, whiteSpace: "nowrap" }}>{sess} sess · ROAS {roas}</span>
+                <button className="btn ghost sm" type="button" onClick={() => set({ campaigns: b.campaigns.filter((_, j) => j !== i) })}><Icon name="x" size={12} /></button>
+              </div>
+            );
+          })}
+          {b.campaigns.length > 0 && <button className="btn sm primary" style={{ alignSelf: "flex-start" }} onClick={() => save()} disabled={saving} type="button">{saving ? "Saving…" : "Save campaigns"}</button>}
+        </div>
+      </div>
+
+      {/* Competitors */}
+      <div className="card">
+        <div className="card-head"><h3><Icon name="shield" size={14} /> Competitor benchmarks</h3>
+          <button className="btn sm ghost" style={{ marginLeft: "auto" }} type="button" onClick={() => set({ competitors: [...b.competitors, { name: "", url: "" }] })}><Icon name="plus" size={12} /> Add</button>
+        </div>
+        <div className="card-pad" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {b.competitors.length === 0 && <div className="muted" style={{ fontSize: 12 }}>Add competitor sites to benchmark their Google PageSpeed performance against this client (yours: {site.perf ?? "—"}/100).</div>}
+          {b.competitors.map((c, i) => (
+            <div key={i} style={{ display: "grid", gridTemplateColumns: "1.2fr 1.6fr auto auto auto", gap: 8, alignItems: "center" }}>
+              <input style={inputStyle} placeholder="Competitor name" value={c.name} onChange={(e) => set({ competitors: b.competitors.map((x, j) => j === i ? { ...x, name: e.target.value } : x) })} />
+              <input style={inputStyle} placeholder="https://competitor.com" value={c.url} onChange={(e) => set({ competitors: b.competitors.map((x, j) => j === i ? { ...x, url: e.target.value } : x) })} />
+              <span className="muted" style={{ fontSize: 11, whiteSpace: "nowrap" }}>
+                {c.performance != null ? `Perf ${c.performance} · SEO ${c.seo ?? "—"}` : "not benchmarked"}
+              </span>
+              <button className="btn ghost sm" type="button" disabled={benchIdx === i || !c.url} onClick={() => runBenchmark(i)}>{benchIdx === i ? "Running…" : "Benchmark"}</button>
+              <button className="btn ghost sm" type="button" onClick={() => save({ ...b, competitors: b.competitors.filter((_, j) => j !== i) })}><Icon name="x" size={12} /></button>
+            </div>
+          ))}
+          {b.competitors.length > 0 && <button className="btn sm primary" style={{ alignSelf: "flex-start" }} onClick={() => save()} disabled={saving} type="button">{saving ? "Saving…" : "Save competitors"}</button>}
+        </div>
+      </div>
+    </div>
   );
 };
 
@@ -2852,10 +3430,12 @@ interface WordPressTabProps {
   newKey: string | null;
   onGenerateKey: () => void;
   updates: WpUpdate[];
+  onRefreshSnapshot: () => void;
 }
 
-const WordPressTab = ({ site, snapshot, keyMasked, keyGenerating, newKey, onGenerateKey, updates }: WordPressTabProps) => {
+const WordPressTab = ({ site, snapshot, keyMasked, keyGenerating, newKey, onGenerateKey, updates, onRefreshSnapshot }: WordPressTabProps) => {
   const [updatingPlugin, setUpdatingPlugin] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
   const [updateToast, setUpdateToast] = useState<{ msg: string; ok: boolean } | null>(null);
 
   const theme = snapshot?.theme_data;
@@ -2866,6 +3446,32 @@ const WordPressTab = ({ site, snapshot, keyMasked, keyGenerating, newKey, onGene
   const security = snapshot?.security_data;
   const forms = snapshot?.form_data ?? [];
   const server = snapshot?.server_data;
+
+  const handleManualSync = async () => {
+    if (syncing) return;
+    setSyncing(true);
+    setUpdateToast(null);
+    try {
+      const res = await apiFetch("/api/wordpress/sync", {
+        method: "POST",
+        body: JSON.stringify({ siteId: site.id }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setUpdateToast({ msg: "Manual sync triggered successfully. Retrieving latest findings...", ok: true });
+        // Polling briefly to let the snapshot update in DB
+        setTimeout(() => {
+          onRefreshSnapshot();
+        }, 1500);
+      } else {
+        setUpdateToast({ msg: data.error ?? "Sync failed.", ok: false });
+      }
+    } catch {
+      setUpdateToast({ msg: "Sync failed: could not reach the server.", ok: false });
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const handlePluginUpdate = async (pluginName: string) => {
     if (updatingPlugin) return;
@@ -2902,7 +3508,17 @@ const WordPressTab = ({ site, snapshot, keyMasked, keyGenerating, newKey, onGene
             <div>
               <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 6 }}>Connection status</div>
               {snapshot ? (
-                <Badge tone="ok" dot>Connected · last sync {new Date(snapshot.created_at).toLocaleString("en-ZA")}</Badge>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <Badge tone="ok" dot>Connected · last sync {new Date(snapshot.created_at).toLocaleString("en-ZA")}</Badge>
+                  <button
+                    className="btn sm primary"
+                    onClick={handleManualSync}
+                    disabled={syncing}
+                    type="button"
+                  >
+                    {syncing ? "Syncing…" : "Sync Now"}
+                  </button>
+                </div>
               ) : (
                 <Badge tone="ghost" dot>Not connected — install the plugin on this WordPress site</Badge>
               )}
@@ -3660,6 +4276,22 @@ const ClarityBalance = ({ used, limit }: { used: number; limit: number }) => {
   );
 };
 
+const IntegCard = ({
+  title, icon, status, children,
+}: {
+  title: string; icon: string; status: 'connected' | 'not_connected'; children: React.ReactNode;
+}) => (
+  <div className="card" style={{ marginBottom: 16 }}>
+    <div className="card-head">
+      <h3><Icon name={icon as Parameters<typeof Icon>[0]['name']} size={14} /> {title}</h3>
+      <Badge tone={status === 'connected' ? 'ok' : 'ghost'} dot>
+        {status === 'connected' ? 'Connected' : 'Not connected'}
+      </Badge>
+    </div>
+    <div className="card-pad">{children}</div>
+  </div>
+);
+
 const IntegrationsTab = ({
   site,
   wpKeyMasked,
@@ -3694,6 +4326,28 @@ const IntegrationsTab = ({
   const [syncStats, setSyncStats] = useState<SyncStats | null>(initialSyncStats);
   const [scanning, setScanning] = useState<Record<string, boolean>>({ ga: false, gsc: false, clarity: false });
   const [scanResult, setScanResult] = useState<Record<string, string | null>>({ ga: null, gsc: null, clarity: null });
+
+  // Phase 3/4: real-user monitoring (front-end tracking script + consent)
+  const [rum, setRum] = useState<{ tracking_id: string | null; enabled: boolean; snippet: string | null; consent_mode: string; respect_dnt: boolean } | null>(null);
+  const [rumSaving, setRumSaving] = useState(false);
+  const applyRum = (d: { tracking_id: string | null; enabled: boolean; snippet: string | null; consent_mode?: string; respect_dnt?: boolean }) =>
+    setRum({ tracking_id: d.tracking_id, enabled: d.enabled, snippet: d.snippet, consent_mode: d.consent_mode ?? 'on', respect_dnt: d.respect_dnt !== false });
+  useEffect(() => {
+    apiFetch(`/api/sites/${site.id}/rum`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d) applyRum(d); })
+      .catch(() => {});
+  }, [site.id]);
+  const saveRum = async (patch: { enabled?: boolean; consentMode?: string; respectDnt?: boolean }) => {
+    setRumSaving(true);
+    const res = await apiFetch(`/api/sites/${site.id}/rum`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }).catch(() => null);
+    if (res?.ok) applyRum(await res.json());
+    setRumSaving(false);
+  };
 
   // Keep syncStats in sync with parent (on tab re-mount / refresh)
   useEffect(() => { setSyncStats(initialSyncStats); }, [initialSyncStats]);
@@ -3789,22 +4443,6 @@ const IntegrationsTab = ({
     });
   };
 
-  const IntegCard = ({
-    title, icon, status, children,
-  }: {
-    title: string; icon: string; status: 'connected' | 'not_connected'; children: React.ReactNode;
-  }) => (
-    <div className="card" style={{ marginBottom: 16 }}>
-      <div className="card-head">
-        <h3><Icon name={icon as Parameters<typeof Icon>[0]['name']} size={14} /> {title}</h3>
-        <Badge tone={status === 'connected' ? 'ok' : 'ghost'} dot>
-          {status === 'connected' ? 'Connected' : 'Not connected'}
-        </Badge>
-      </div>
-      <div className="card-pad">{children}</div>
-    </div>
-  );
-
   if (!loaded) {
     return (
       <div className="card card-pad" style={{ textAlign: 'center', padding: 48 }}>
@@ -3844,6 +4482,80 @@ const IntegrationsTab = ({
           <div style={{ marginTop: 10, padding: '10px 14px', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.25)', borderRadius: 8, fontSize: 12.5, color: 'var(--green)' }}>
             Key generated — copy it now. It will not be shown again in full.
           </div>
+        )}
+      </IntegCard>
+
+      {/* Real-User Monitoring — front-end tracking script */}
+      <IntegCard title="Real-User Monitoring" icon="activity" status={rum?.enabled ? 'connected' : 'not_connected'}>
+        <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.6 }}>
+          Collects real-user field data — Core Web Vitals, clicks, on-site search, returning vs new visitors —
+          via a lightweight script. On WordPress it is injected automatically by the plugin once enabled here;
+          for other platforms, paste the snippet below before <code>&lt;/body&gt;</code>.
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+          <button
+            className={`btn sm ${rum?.enabled ? '' : 'primary'}`}
+            onClick={() => saveRum({ enabled: !rum?.enabled })}
+            disabled={rumSaving || !rum?.tracking_id}
+            type="button"
+          >
+            {rumSaving ? 'Saving…' : rum?.enabled ? 'Disable collection' : 'Enable collection'}
+          </button>
+          <span className="muted" style={{ fontSize: 12.5 }}>
+            {rum?.enabled ? 'Collecting real-user data.' : 'Collection is off — no data is gathered.'}
+          </span>
+        </div>
+        {rum && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 12, flexWrap: 'wrap', padding: '10px 14px', background: 'var(--bg-inset)', borderRadius: 8, border: '1px solid var(--border-soft)' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
+              <span className="muted">Consent mode</span>
+              <select
+                value={rum.consent_mode}
+                onChange={(e) => saveRum({ consentMode: e.target.value })}
+                disabled={rumSaving}
+                style={{ background: 'var(--bg-card)', border: '1px solid var(--border-mid)', borderRadius: 6, color: 'var(--text-primary)', fontSize: 12, padding: '4px 8px' }}
+              >
+                <option value="on">On — always collect</option>
+                <option value="opt-in">Opt-in — only after consent (GDPR)</option>
+                <option value="opt-out">Opt-out — unless visitor declines</option>
+              </select>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5 }}>
+              <input type="checkbox" checked={rum.respect_dnt} onChange={(e) => saveRum({ respectDnt: e.target.checked })} disabled={rumSaving} />
+              Respect “Do Not Track” / Global Privacy Control
+            </label>
+          </div>
+        )}
+        {rum?.consent_mode === 'opt-in' && (
+          <div className="muted" style={{ fontSize: 11.5, marginBottom: 12, lineHeight: 1.5 }}>
+            Opt-in mode collects nothing until your cookie banner calls <code style={{ fontFamily: 'var(--font-mono)' }}>window.eohSetConsent(true)</code>. No personal data (emails, phone numbers, tokens) is ever stored — events are redacted on ingest.
+          </div>
+        )}
+        {rum?.tracking_id && (
+          <>
+            <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>Tracking ID</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 13, background: 'var(--bg-inset)', border: '1px solid var(--border-soft)', borderRadius: 8, padding: '8px 14px', flex: 1 }}>
+                {rum.tracking_id}
+              </div>
+              <button className="btn sm" onClick={() => copy(rum.tracking_id!, 'rumid')} type="button">
+                {copied === 'rumid' ? 'Copied!' : 'Copy'}
+              </button>
+            </div>
+            {rum.snippet && (
+              <>
+                <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>Embed snippet (non-WordPress sites)</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, background: 'var(--bg-inset)', border: '1px solid var(--border-soft)', borderRadius: 8, padding: '8px 14px', flex: 1, overflowX: 'auto', whiteSpace: 'nowrap' }}>
+                    {rum.snippet}
+                  </div>
+                  <button className="btn sm" onClick={() => copy(rum.snippet!, 'rumsnip')} type="button">
+                    {copied === 'rumsnip' ? 'Copied!' : 'Copy'}
+                  </button>
+                </div>
+              </>
+            )}
+          </>
         )}
       </IntegCard>
 
@@ -4006,16 +4718,64 @@ const PerformanceTab = ({
   issues,
   siteId,
   onScanComplete,
+  a11yViolations = [],
+  a11yCheckedAt = null,
+  rum = null,
 }: {
   metrics: PerfMetricRow[];
   uptimeHistory: UptimeCheckRow[];
   issues: Issue[];
   siteId: string;
   onScanComplete: () => void;
+  a11yViolations?: A11yViolationUI[];
+  a11yCheckedAt?: string | null;
+  rum?: RumSummary | null;
 }) => {
   const [perfToast, setPerfToast] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const showPerfToast = (msg: string) => { setPerfToast(msg); setTimeout(() => setPerfToast(null), 4000); };
+
+  // Phase 5: optimization opportunities parsed from the stored Lighthouse result.
+  const [opps, setOpps] = useState<{ mobile: PerfOpportunity[]; desktop: PerfOpportunity[] } | null>(null);
+  const [oppsDevice, setOppsDevice] = useState<"mobile" | "desktop">("mobile");
+  const fetchOpps = useCallback(async () => {
+    const res = await apiFetch(`/api/performance/opportunities?siteId=${siteId}`).catch(() => null);
+    if (res?.ok) {
+      const d = await res.json();
+      setOpps({ mobile: d.mobile?.opportunities ?? [], desktop: d.desktop?.opportunities ?? [] });
+    }
+  }, [siteId]);
+  useEffect(() => { fetchOpps(); }, [fetchOpps]);
+
+  // Phase 5: AI per-violation accessibility fixes
+  const [a11yFixes, setA11yFixes] = useState<Record<string, string>>({});
+  const [a11yFixLoading, setA11yFixLoading] = useState<string | null>(null);
+  const suggestA11yFix = async (v: A11yViolationUI) => {
+    setA11yFixLoading(v.id);
+    const res = await apiFetch("/api/ai/a11y-fix", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rule: v.id, help: v.help, description: v.description, target: v.sampleTargets[0] ?? "" }),
+    }).catch(() => null);
+    const text = res?.ok ? (await res.json()).fix : null;
+    setA11yFixes((prev) => ({ ...prev, [v.id]: text ?? "AI is not configured (set ANTHROPIC_API_KEY)." }));
+    setA11yFixLoading(null);
+  };
+
+  // Phase 5: AI monthly improvement plan
+  const [plan, setPlan] = useState<string | null>(null);
+  const [planLoading, setPlanLoading] = useState(false);
+  const generatePlan = async () => {
+    setPlanLoading(true);
+    const res = await apiFetch("/api/ai/improvement-plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ siteId }),
+    }).catch(() => null);
+    if (res?.ok) { const d = await res.json(); setPlan(d.plan ?? "AI is not configured (set ANTHROPIC_API_KEY)."); }
+    else setPlan("Could not generate a plan right now.");
+    setPlanLoading(false);
+  };
 
   const runScan = async () => {
     setScanning(true);
@@ -4030,6 +4790,7 @@ const PerformanceTab = ({
       if (res.ok && data.ok) {
         showPerfToast(`Scan complete — Desktop ${data.desktop?.performance ?? "—"}, Mobile ${data.mobile?.performance ?? "—"}`);
         onScanComplete();
+        fetchOpps();
       } else {
         showPerfToast(data.error ?? "Scan failed — check PAGESPEED_API_KEY is set");
       }
@@ -4078,8 +4839,57 @@ const PerformanceTab = ({
         )
       : null;
 
+  const fmtVital = (metric: string, v: number | null): string => {
+    if (v == null) return "—";
+    if (metric === "CLS") return v.toFixed(2);
+    if (metric === "LCP" || metric === "FCP") return (v / 1000).toFixed(2) + "s";
+    return Math.round(v) + "ms";
+  };
+  const ratingColor = (r: string | null) =>
+    r === "good" ? "var(--green)" : r === "needs-improvement" ? "var(--amber)" : r === "poor" ? "var(--red)" : "var(--text-tertiary)";
+  const fieldSamples = rum ? Math.max(...rum.vitals.map((v) => v.count), 0) : 0;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      {/* Field Core Web Vitals — real users (vs the lab/PSI scores below) */}
+      <div className="card">
+        <div className="card-head">
+          <h3><Icon name="bolt" size={14} /> Core Web Vitals — real users</h3>
+          <span className="h-sub">
+            {fieldSamples > 0 ? `${fieldSamples.toLocaleString()} page loads · last ${rum?.rangeDays ?? 30} days (p75)` : "field data"}
+          </span>
+        </div>
+        <div className="card-pad">
+          {fieldSamples === 0 ? (
+            <div className="muted" style={{ fontSize: 13, lineHeight: 1.6 }}>
+              {rum && !rum.rumEnabled
+                ? "Real-user monitoring is off for this site. Turn it on under Integrations → Real-User Monitoring to collect field data from actual visitors."
+                : "No real-user data yet. Once the tracking script is live and visitors arrive, real Core Web Vitals will appear here — these reflect actual visitor experience, unlike the lab scores below."}
+            </div>
+          ) : (
+            <>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+                {(rum?.vitals ?? []).map((v) => (
+                  <div key={v.metric} style={{ flex: "1 1 110px", padding: "12px 14px", background: "rgba(255,255,255,0.025)", borderRadius: 10, border: "1px solid var(--border-soft)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                      <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{v.metric}</span>
+                      {v.rating && <span style={{ width: 7, height: 7, borderRadius: "50%", background: ratingColor(v.rating) }} />}
+                    </div>
+                    <div style={{ fontSize: 20, fontWeight: 700, color: ratingColor(v.rating), fontFamily: "var(--font-mono)" }}>
+                      {fmtVital(v.metric, v.p75)}
+                    </div>
+                    <div className="muted" style={{ fontSize: 10, marginTop: 2 }}>{v.count > 0 ? `${v.count.toLocaleString()} samples` : "no data"}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="muted" style={{ fontSize: 11, marginTop: 10 }}>
+                p75 = the experience of the slowest 25% of visits. <span style={{ color: "var(--green)" }}>● good</span> · <span style={{ color: "var(--amber)" }}>● needs work</span> · <span style={{ color: "var(--red)" }}>● poor</span>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
       {/* Lighthouse scores */}
       {(["desktop", "mobile", "tablet"] as const).map((device) => {
         const m = latest[device];
@@ -4126,6 +4936,123 @@ const PerformanceTab = ({
           </div>
         );
       })}
+
+      {/* Optimization opportunities — parsed from the stored Lighthouse result */}
+      {opps && (opps.mobile.length > 0 || opps.desktop.length > 0) && (
+        <div className="card">
+          <div className="card-head">
+            <h3><Icon name="bolt" size={14} /> Optimization opportunities</h3>
+            <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+              {(["mobile", "desktop"] as const).map((d) => (
+                <button key={d} type="button" className={`btn sm ${oppsDevice === d ? "primary" : "ghost"}`} onClick={() => setOppsDevice(d)} style={{ textTransform: "capitalize" }}>{d}</button>
+              ))}
+            </div>
+          </div>
+          <div className="card-pad">
+            {opps[oppsDevice].length === 0 ? (
+              <div className="muted" style={{ fontSize: 13 }}>No opportunities recorded for {oppsDevice} — run a Page Speed scan.</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {opps[oppsDevice].map((o) => {
+                  const sc = o.score == null ? "var(--text-tertiary)" : o.score >= 0.9 ? "var(--green)" : o.score >= 0.5 ? "var(--amber)" : "var(--red)";
+                  const savings = [o.savingsMs ? `~${(o.savingsMs / 1000).toFixed(o.savingsMs >= 1000 ? 1 : 2)}s` : null, formatBytes(o.savingsBytes)].filter(Boolean).join(" · ");
+                  return (
+                    <div key={o.key} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", background: "rgba(255,255,255,0.025)", borderRadius: 8, border: "1px solid var(--border-soft)" }}>
+                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: sc, flexShrink: 0 }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 500 }}>{o.label}</div>
+                        <div className="muted" style={{ fontSize: 11 }}>{o.category}{o.displayValue ? ` · ${o.displayValue}` : ""}</div>
+                      </div>
+                      {savings && <span style={{ fontSize: 12, fontWeight: 600, color: "var(--amber)", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>save {savings}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <div className="muted" style={{ fontSize: 11, marginTop: 10 }}>Estimated savings from Google Lighthouse. Largest wins first.</div>
+          </div>
+        </div>
+      )}
+
+      {/* AI monthly improvement plan */}
+      <div className="card">
+        <div className="card-head">
+          <h3><Icon name="sparkles" size={14} /> AI improvement plan</h3>
+          <button className="btn sm primary" type="button" onClick={generatePlan} disabled={planLoading} style={{ marginLeft: "auto" }}>
+            {planLoading ? "Generating…" : plan ? "Regenerate" : "Generate plan"}
+          </button>
+        </div>
+        <div className="card-pad">
+          {plan ? (
+            <div style={{ fontSize: 13, lineHeight: 1.65, whiteSpace: "pre-wrap", color: "var(--text-secondary)" }}>{plan}</div>
+          ) : (
+            <div className="muted" style={{ fontSize: 13 }}>
+              Generate a prioritised, traffic-weighted action plan (quick wins · medium effort · high impact) synthesised from performance, SEO, accessibility, issues, and real-user data.
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Accessibility audit — itemized axe-core (WCAG) violations from Watchtower */}
+      <div className="card">
+        <div className="card-head">
+          <h3><Icon name="shield" size={14} /> Accessibility audit</h3>
+          <span className="h-sub">
+            {a11yCheckedAt ? `axe-core · ${new Date(a11yCheckedAt).toLocaleDateString()}` : "WCAG 2.1 A & AA"}
+          </span>
+        </div>
+        <div className="card-pad">
+          {a11yViolations.length === 0 ? (
+            <div className="muted" style={{ fontSize: 13 }}>
+              {a11yCheckedAt
+                ? "No accessibility violations detected in the latest Watchtower run. 🎉"
+                : "No accessibility scan yet — runs automatically with the Watchtower checks."}
+            </div>
+          ) : (
+            <>
+              <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+                {(["critical", "serious", "moderate", "minor"] as const).map((lvl) => {
+                  const n = a11yViolations.filter((v) => v.impact === lvl).length;
+                  if (n === 0) return null;
+                  const tone = lvl === "critical" ? "crit" : lvl === "serious" ? "high" : lvl === "moderate" ? "med" : "low";
+                  return <Badge key={lvl} tone={tone} dot>{n} {lvl}</Badge>;
+                })}
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {a11yViolations.slice(0, 20).map((v) => {
+                  const tone = v.impact === "critical" ? "crit" : v.impact === "serious" ? "high" : v.impact === "moderate" ? "med" : "low";
+                  return (
+                    <div key={v.id} style={{ padding: "10px 12px", background: "rgba(255,255,255,0.025)", borderRadius: 8, border: "1px solid var(--border-soft)" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+                        <Badge tone={tone}>{v.impact ?? "n/a"}</Badge>
+                        <span style={{ fontWeight: 600, fontSize: 13 }}>{v.help}</span>
+                        <span className="muted" style={{ fontSize: 11, marginLeft: "auto" }}>{v.nodes} element{v.nodes === 1 ? "" : "s"}</span>
+                      </div>
+                      <div className="muted" style={{ fontSize: 12, marginBottom: v.sampleTargets.length ? 6 : 0 }}>{v.description}</div>
+                      {v.sampleTargets.length > 0 && (
+                        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-tertiary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {v.sampleTargets[0]}
+                        </div>
+                      )}
+                      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 6 }}>
+                        <a href={v.helpUrl} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: "#00E5FF" }}>WCAG reference →</a>
+                        <button type="button" className="btn ghost sm" style={{ fontSize: 11, padding: "2px 8px" }} disabled={a11yFixLoading === v.id} onClick={() => suggestA11yFix(v)}>
+                          <Icon name="sparkles" size={11} /> {a11yFixLoading === v.id ? "Thinking…" : a11yFixes[v.id] ? "Regenerate fix" : "Suggest fix"}
+                        </button>
+                      </div>
+                      {a11yFixes[v.id] && (
+                        <div style={{ marginTop: 8, padding: "10px 12px", background: "rgba(0,229,255,0.05)", border: "1px solid rgba(0,229,255,0.15)", borderRadius: 8, fontSize: 12, lineHeight: 1.6, whiteSpace: "pre-wrap", color: "var(--text-secondary)" }}>
+                          {a11yFixes[v.id]}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
 
       {/* Response time summary */}
       {avgResponse != null && (
@@ -4542,6 +5469,12 @@ const SecurityTab = ({
 };
 
 // ─── Forms Tab ────────────────────────────────────────────────────────────────
+const Trend = ({ curr, prev }: { curr: number; prev: number }) => {
+  if (prev === 0) return <span className="dim">—</span>;
+  const d = curr - prev;
+  return <span style={{ fontWeight: 600, fontSize: 12, color: d >= 0 ? "var(--green)" : "var(--red)" }}>{d >= 0 ? "▲" : "▼"}{Math.abs(d)}</span>;
+};
+
 const FormsTab = ({
   formChecks,
   wpSnapshot,
@@ -4600,12 +5533,6 @@ const FormsTab = ({
     if (s === "pass") return "ok";
     if (s === "fail" || s === "error") return "crit";
     return "high";
-  };
-
-  const Trend = ({ curr, prev }: { curr: number; prev: number }) => {
-    if (prev === 0) return <span className="dim">—</span>;
-    const d = curr - prev;
-    return <span style={{ fontWeight: 600, fontSize: 12, color: d >= 0 ? "var(--green)" : "var(--red)" }}>{d >= 0 ? "▲" : "▼"}{Math.abs(d)}</span>;
   };
 
   return (

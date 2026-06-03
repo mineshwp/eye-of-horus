@@ -165,6 +165,9 @@ async function main() {
                 regression_detected: result.regressionDetected,
                 regression_threshold: result.regressionThreshold,
                 forms_found: result.formsFound,
+                a11y_violations: result.a11yViolations,
+                a11y_violation_count: result.a11yViolationCount,
+                a11y_serious_count: result.a11ySeriousCount,
                 issues_created: result.issuesFound.length,
                 error_message: result.errorMessage,
                 checked_at: result.checkedAt,
@@ -236,6 +239,49 @@ async function main() {
                     },
                   });
                 }
+              }
+
+              // Create issues for serious/critical accessibility violations.
+              // Deduped by title across devices/pages so the same WCAG rule
+              // doesn't spawn one issue per device.
+              for (const v of result.a11yViolations) {
+                if (v.impact !== 'serious' && v.impact !== 'critical') continue;
+
+                const title = `Accessibility: ${v.help}`;
+                const { data: existingA11y } = await supabase
+                  .from('issues')
+                  .select('id')
+                  .eq('site_id', site.id)
+                  .eq('title', title)
+                  .in('status', ['New', 'Investigating', 'In Progress'])
+                  .limit(1);
+                if (existingA11y && existingA11y.length > 0) continue;
+
+                totalIssues++;
+                await supabase.from('issues').insert({
+                  id: issueId('a11y'),
+                  site_id: site.id,
+                  title,
+                  severity: v.impact === 'critical' ? 'high' : 'medium',
+                  impact: `${v.nodes} element${v.nodes === 1 ? '' : 's'} affected — ${v.description}`,
+                  category: 'Accessibility',
+                  page: pg.path,
+                  recommended: `Fix per WCAG guidance: ${v.helpUrl}`,
+                  owner: 'Unassigned',
+                  status: 'New',
+                  detected: nowLabel(),
+                  change_type: 'Accessibility audit',
+                  confidence: 90,
+                  evidence: {
+                    rule: v.id,
+                    impact: v.impact,
+                    nodes: v.nodes,
+                    sample_targets: v.sampleTargets,
+                    help_url: v.helpUrl,
+                    page_path: pg.path,
+                    device: device.name,
+                  },
+                });
               }
 
               // Insert form checks — use actual test results when available

@@ -1,4 +1,5 @@
 import { Browser } from 'playwright';
+import AxeBuilder from '@axe-core/playwright';
 import * as fs from 'fs';
 import * as path from 'path';
 import { DeviceConfig } from '../devices';
@@ -38,6 +39,16 @@ export interface FormTestResult {
   errorMessage: string | null;
 }
 
+export interface A11yViolation {
+  id: string;
+  impact: 'minor' | 'moderate' | 'serious' | 'critical' | null;
+  help: string;
+  description: string;
+  helpUrl: string;
+  nodes: number;
+  sampleTargets: string[];
+}
+
 export interface SiteCheckResult {
   siteId: string;
   device: string;
@@ -64,6 +75,9 @@ export interface SiteCheckResult {
   regressionThreshold: number;
   formsFound: FormFound[];
   formTestResults: FormTestResult[];
+  a11yViolations: A11yViolation[];
+  a11yViolationCount: number;
+  a11ySeriousCount: number;
   issuesFound: string[];
   errorMessage: string | null;
   checkedAt: string;
@@ -72,6 +86,17 @@ export interface SiteCheckResult {
 const SCREENSHOT_BASE = path.join(process.cwd(), 'public', 'playwright-data');
 const TIMEOUT = 30000;
 const REGRESSION_THRESHOLD = 10;
+
+/** Numeric weight for an axe impact level — used for sorting most-severe first. */
+function impactWeight(impact: string | null | undefined): number {
+  switch (impact) {
+    case 'critical': return 4;
+    case 'serious': return 3;
+    case 'moderate': return 2;
+    case 'minor': return 1;
+    default: return 0;
+  }
+}
 
 export async function checkSite(
   browser: Browser,
@@ -130,6 +155,7 @@ export async function checkSite(
   let status: 'pass' | 'fail' | 'error' = 'pass';
   let errorMessage: string | null = null;
   const formTestResults: FormTestResult[] = [];
+  let a11yViolations: A11yViolation[] = [];
 
   try {
     const start = Date.now();
@@ -253,6 +279,36 @@ export async function checkSite(
       // No baseline — save current screenshot as baseline
       fs.copyFileSync(screenshotPath, baselinePath);
       console.log(`  Set initial baseline for ${site.name} on ${device.name}`);
+    }
+
+    // --- Accessibility audit (axe-core / WCAG 2.1 A & AA) ---
+    // Run before any form submission so axe sees the original rendered page.
+    try {
+      const axeResults = await new AxeBuilder({ page })
+        .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+        .analyze();
+
+      a11yViolations = axeResults.violations
+        // Most impactful first.
+        .sort((a, b) => impactWeight(b.impact) - impactWeight(a.impact))
+        .slice(0, 30)
+        .map((v) => ({
+          id: v.id,
+          impact: (v.impact as A11yViolation['impact']) ?? null,
+          help: v.help,
+          description: v.description,
+          helpUrl: v.helpUrl,
+          nodes: v.nodes.length,
+          sampleTargets: v.nodes
+            .slice(0, 3)
+            .map((n) => (Array.isArray(n.target) ? n.target.join(' ') : String(n.target)))
+            .slice(0, 3),
+        }));
+    } catch (axeErr: unknown) {
+      console.warn(
+        `  axe scan failed for ${site.name}/${device.name}:`,
+        axeErr instanceof Error ? axeErr.message : String(axeErr),
+      );
     }
 
     // --- Optional form submission testing ---
@@ -430,6 +486,9 @@ export async function checkSite(
     regressionThreshold: REGRESSION_THRESHOLD,
     formsFound,
     formTestResults,
+    a11yViolations,
+    a11yViolationCount: a11yViolations.length,
+    a11ySeriousCount: a11yViolations.filter((v) => v.impact === 'serious' || v.impact === 'critical').length,
     issuesFound,
     errorMessage,
     checkedAt,

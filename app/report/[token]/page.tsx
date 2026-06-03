@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation';
 import { PrintButton } from './PrintButton';
-import type { ReportContent, ReportIssue, WPFormStat, WPFormBreakdown, ReportSecurity } from '@/lib/reports/types';
+import type { ReportContent, ReportIssue, WPFormStat, WPFormBreakdown, ReportSecurity, ReportChange, ReportRecommendation } from '@/lib/reports/types';
 
 interface ReportPageProps {
   params: Promise<{ token: string }>;
@@ -71,6 +71,44 @@ export default async function PublicReportPage({ params }: ReportPageProps) {
         </div>
       </div>
 
+      {/* Executive Score — 5 pillars */}
+      {content.pillars && (
+        <div className="report-section">
+          <div className="section-title">Executive Score</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap', marginBottom: 18 }}>
+            {(() => {
+              const o = content.pillars!.overall;
+              const c = o >= 90 ? '#22C55E' : o >= 75 ? '#F59E0B' : '#EF4444';
+              return (
+                <div style={{ textAlign: 'center', minWidth: 120 }}>
+                  <div style={{ fontSize: 46, fontWeight: 800, color: c, lineHeight: 1 }}>{o}</div>
+                  <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>Overall / 100</div>
+                </div>
+              );
+            })()}
+            <div className="metric-grid" style={{ flex: 1, minWidth: 280 }}>
+              {([
+                { label: 'Performance', val: content.pillars.performance },
+                { label: 'UX', val: content.pillars.ux },
+                { label: 'SEO', val: content.pillars.seo },
+                { label: 'Accessibility', val: content.pillars.accessibility },
+                { label: 'Reliability', val: content.pillars.reliability },
+              ] as const).map(({ label, val }) => {
+                const c = val == null ? '#9ca3af' : val >= 90 ? '#22C55E' : val >= 75 ? '#F59E0B' : '#EF4444';
+                return (
+                  <div key={label} className="metric-card" style={{ borderTop: `3px solid ${c}` }}>
+                    <div className="metric-label">{label}</div>
+                    <div className="metric-value" style={{ color: c }}>
+                      {val == null ? '—' : val}{val != null && <span style={{ fontSize: 13, color: '#9ca3af' }}>/100</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Health Metrics */}
       <div className="report-section">
         <div className="section-title">Health Overview</div>
@@ -112,6 +150,32 @@ export default async function PublicReportPage({ params }: ReportPageProps) {
           </div>
         </div>
       </div>
+
+      {/* What Changed */}
+      {content.changes && content.changes.length > 0 && (
+        <div className="report-section">
+          <div className="section-title">What Changed</div>
+          <div style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 10, padding: '4px 20px' }}>
+            {content.changes.map((ch: ReportChange, i: number) => {
+              const color = ch.good ? '#22C55E' : '#EF4444';
+              const arrow = ch.direction === 'up' ? '▲' : ch.direction === 'down' ? '▼' : '—';
+              return (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 0', borderBottom: i < content.changes!.length - 1 ? '1px solid #e5e7eb' : 'none' }}>
+                  <div style={{ fontSize: 14, color: '#374151' }}>{ch.metric}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                    <span style={{ fontSize: 13, color: '#9ca3af' }}>
+                      {ch.previous}{ch.unit ?? ''} → {ch.current}{ch.unit ?? ''}
+                    </span>
+                    <span style={{ fontSize: 13, fontWeight: 700, color, minWidth: 78, textAlign: 'right' as const }}>
+                      {arrow} {Math.abs(ch.deltaPct)}%
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Issues */}
       {content.issues.topIssues && content.issues.topIssues.length > 0 && (
@@ -399,14 +463,37 @@ export default async function PublicReportPage({ params }: ReportPageProps) {
         </div>
       )}
 
-      {/* Recommendations */}
+      {/* Recommendations — impact-ranked when available */}
       <div className="report-section">
-        <div className="section-title">Recommendations</div>
-        <ul className="rec-list">
-          {content.recommendations.map((rec: string, i: number) => (
-            <li key={i}>{rec}</li>
-          ))}
-        </ul>
+        <div className="section-title">Priority Recommendations</div>
+        {content.rankedRecommendations && content.rankedRecommendations.length > 0 ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {content.rankedRecommendations.map((r: ReportRecommendation, i: number) => {
+              const pr = r.priority === 'high'
+                ? { bg: '#FEF2F2', border: '#FECACA', color: '#DC2626', label: 'High impact' }
+                : r.priority === 'medium'
+                  ? { bg: '#FFFBEB', border: '#FDE68A', color: '#D97706', label: 'Medium' }
+                  : { bg: '#F0FDF4', border: '#BBF7D0', color: '#16A34A', label: 'Low' };
+              return (
+                <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '12px 16px', background: pr.bg, border: `1px solid ${pr.border}`, borderRadius: 10 }}>
+                  <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase' as const, color: pr.color, background: '#fff', border: `1px solid ${pr.border}`, borderRadius: 6, padding: '3px 8px', marginTop: 1 }}>
+                    {pr.label}
+                  </span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 14, color: '#374151', lineHeight: 1.5 }}>{r.text}</div>
+                    <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{r.category}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <ul className="rec-list">
+            {content.recommendations.map((rec: string, i: number) => (
+              <li key={i}>{rec}</li>
+            ))}
+          </ul>
+        )}
       </div>
 
       {/* Footer */}

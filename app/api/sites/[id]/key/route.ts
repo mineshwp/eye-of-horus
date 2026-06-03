@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { randomBytes } from "crypto";
 import { getApiUser, unauthorizedResponse } from "@/lib/auth/index";
+import { logAudit } from "@/lib/audit";
 
 function getServerClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
@@ -27,6 +28,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+
+  await logAudit({ actorEmail: user.email, action: "site.key_rotate", targetType: "site", targetId: siteId, supabase });
 
   return NextResponse.json({ ok: true, api_key: apiKey, site_id: siteId });
 }

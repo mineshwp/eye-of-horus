@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { getApiUser, unauthorizedResponse } from '@/lib/auth/index';
+import { logAudit } from '@/lib/audit';
 
 export const runtime = 'nodejs';
 
@@ -46,7 +47,7 @@ export async function POST(request: NextRequest) {
 
   const supabase = createClient(supabaseUrl, supabaseKey);
 
-  const allowed = ['openai_api_key', 'email_provider', 'email_api_key', 'email_from_address', 'twilio_account_sid', 'twilio_auth_token', 'twilio_whatsapp_from', 'analytics_sync_time'];
+  const allowed = ['openai_api_key', 'email_provider', 'email_api_key', 'email_from_address', 'twilio_account_sid', 'twilio_auth_token', 'twilio_whatsapp_from', 'analytics_sync_time', 'rum_retention_days'];
   const upserts = Object.entries(body)
     .filter(([k]) => allowed.includes(k))
     .map(([key, value]) => ({
@@ -59,6 +60,9 @@ export async function POST(request: NextRequest) {
 
   const { error } = await supabase.from('global_settings').upsert(upserts, { onConflict: 'key' });
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  // Audit which keys were changed (never log the values — some are secrets).
+  await logAudit({ actorEmail: user.email, action: 'settings.update', targetType: 'settings', detail: { keys: upserts.map((u) => u.key) }, supabase });
 
   return NextResponse.json({ ok: true, updated: upserts.length });
 }

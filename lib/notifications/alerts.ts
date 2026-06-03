@@ -11,7 +11,12 @@ export type AlertType =
   | 'critical_issue'
   | 'http_error'
   | 'performance_critical'
-  | 'domain_expiring';
+  | 'domain_expiring'
+  // Phase 1c — analytics-based triggers (email only for now)
+  | 'performance_drop'
+  | 'traffic_drop'
+  | 'js_error_spike'
+  | 'conversion_drop';
 
 export interface AlertPayload {
   siteId: string;
@@ -22,6 +27,12 @@ export interface AlertPayload {
   severity: 'critical' | 'high' | 'medium';
   issueId?: string;
   detectedAt?: string;
+  /**
+   * When true, only the email channel is used and WhatsApp is skipped.
+   * TODO(whatsapp): enable WhatsApp for analytics-based triggers later — the user
+   * deferred WhatsApp wiring for these new trigger types (2026-06-03).
+   */
+  emailOnly?: boolean;
 }
 
 interface AlertSettings {
@@ -33,6 +44,11 @@ interface AlertSettings {
   alert_on_ssl_critical: boolean;
   alert_on_critical_issues: boolean;
   dedup_window_hours: number;
+  // Phase 1c toggles (may be absent on older rows → treated as enabled)
+  alert_on_performance_drop?: boolean;
+  alert_on_traffic_drop?: boolean;
+  alert_on_js_errors?: boolean;
+  alert_on_conversion_drop?: boolean;
 }
 
 // ─── Supabase client ──────────────────────────────────────────────────────────
@@ -129,6 +145,10 @@ function buildAlertEmailHtml(payload: AlertPayload, dashboardUrl: string): strin
     http_error: 'HTTP error',
     performance_critical: 'Performance critical',
     domain_expiring: 'Domain expiring soon',
+    performance_drop: 'Performance score dropped',
+    traffic_drop: 'Traffic dropped sharply',
+    js_error_spike: 'JavaScript errors spiked',
+    conversion_drop: 'Form submissions dropped',
   };
 
   return `<!DOCTYPE html>
@@ -202,6 +222,19 @@ export async function sendAlert(payload: AlertPayload): Promise<{
   if (payload.alertType === 'critical_issue' && !settings.alert_on_critical_issues) {
     return { emailsSent: 0, whatsappSent: 0, skipped: 1 };
   }
+  // Phase 1c analytics triggers — default enabled when the column is absent/null.
+  if (payload.alertType === 'performance_drop' && settings.alert_on_performance_drop === false) {
+    return { emailsSent: 0, whatsappSent: 0, skipped: 1 };
+  }
+  if (payload.alertType === 'traffic_drop' && settings.alert_on_traffic_drop === false) {
+    return { emailsSent: 0, whatsappSent: 0, skipped: 1 };
+  }
+  if (payload.alertType === 'js_error_spike' && settings.alert_on_js_errors === false) {
+    return { emailsSent: 0, whatsappSent: 0, skipped: 1 };
+  }
+  if (payload.alertType === 'conversion_drop' && settings.alert_on_conversion_drop === false) {
+    return { emailsSent: 0, whatsappSent: 0, skipped: 1 };
+  }
 
   const appUrl = process.env.APP_URL ?? 'https://eyeofhorus.agency';
   const dashboardUrl = `${appUrl}/sites/${payload.siteId}`;
@@ -249,7 +282,8 @@ export async function sendAlert(payload: AlertPayload): Promise<{
   }
 
   // ── WhatsApp alerts ───────────────────────────────────────────────────────
-  if (settings.whatsapp_alerts_enabled && settings.whatsapp_recipients.length > 0) {
+  // emailOnly skips WhatsApp (deferred for the Phase 1c analytics triggers).
+  if (!payload.emailOnly && settings.whatsapp_alerts_enabled && settings.whatsapp_recipients.length > 0) {
     const alreadySent = await wasRecentlyAlerted(
       supabase,
       payload.siteId,
@@ -371,4 +405,123 @@ export async function fireAlertsForCheckResults(
   }
 
   return { totalEmailsSent, totalWhatsappSent };
+}
+
+// ─── Phase 1c: analytics-based alerts (email only) ────────────────────────────
+// Diffs the latest vs previous snapshot tables to detect meaningful drops/spikes.
+// WhatsApp is intentionally skipped (emailOnly) until WhatsApp wiring is added.
+
+const PERF_DROP_POINTS = 15;        // performance score drop that triggers an alert
+const TRAFFIC_DROP_PCT = 0.3;       // 30% session drop vs previous period
+const TRAFFIC_MIN_PREV_SESSIONS = 50;
+const JS_ERROR_MIN = 5;             // minimum js errors before a spike counts
+const JS_ERROR_SPIKE_FACTOR = 2;    // latest >= 2× previous
+const CONVERSION_DROP_PCT = 0.4;    // 40% drop in monthly form submissions
+const CONVERSION_MIN_PREV = 5;
+
+export async function fireAnalyticsAlerts(): Promise<{
+  emailsSent: number;
+  skipped: number;
+  evaluated: number;
+}> {
+  const supabase = getClient();
+  if (!supabase) return { emailsSent: 0, skipped: 0, evaluated: 0 };
+
+  const { data: sites } = await supabase
+    .from('sites')
+    .select('id, name, url')
+    .eq('status', 'active');
+  if (!sites || sites.length === 0) return { emailsSent: 0, skipped: 0, evaluated: 0 };
+
+  let emailsSent = 0;
+  let skipped = 0;
+  let evaluated = 0;
+
+  for (const site of sites as Array<{ id: string; name: string; url: string }>) {
+    const base = { siteId: site.id, siteName: site.name, siteUrl: site.url, emailOnly: true as const };
+    const fire = async (
+      alertType: AlertType,
+      issueTitle: string,
+      severity: 'critical' | 'high' | 'medium',
+    ) => {
+      evaluated++;
+      const r = await sendAlert({ ...base, alertType, issueTitle, severity });
+      emailsSent += r.emailsSent;
+      skipped += r.skipped;
+    };
+
+    // ── Performance-score drop (desktop) ──────────────────────────────────────
+    const { data: perf } = await supabase
+      .from('performance_metrics')
+      .select('performance_score, created_at')
+      .eq('site_id', site.id)
+      .eq('device', 'desktop')
+      .order('created_at', { ascending: false })
+      .limit(2);
+    if (perf && perf.length === 2) {
+      const latest = perf[0].performance_score as number | null;
+      const prev = perf[1].performance_score as number | null;
+      if (typeof latest === 'number' && typeof prev === 'number' && prev - latest >= PERF_DROP_POINTS) {
+        await fire('performance_drop', `Desktop performance score fell ${prev} → ${latest} (−${prev - latest} pts)`, 'high');
+      }
+    }
+
+    // ── Traffic drop (GA4 sessions vs previous period) ────────────────────────
+    const { data: ga } = await supabase
+      .from('analytics_snapshots')
+      .select('metrics, created_at')
+      .eq('site_id', site.id)
+      .order('created_at', { ascending: false })
+      .limit(1);
+    const gaMetrics = ga?.[0]?.metrics as
+      | { sessions?: number; previousPeriod?: { sessions?: number } | null }
+      | undefined;
+    if (gaMetrics) {
+      const cur = gaMetrics.sessions ?? 0;
+      const prevSessions = gaMetrics.previousPeriod?.sessions ?? 0;
+      if (
+        prevSessions >= TRAFFIC_MIN_PREV_SESSIONS &&
+        cur < prevSessions * (1 - TRAFFIC_DROP_PCT)
+      ) {
+        const pct = Math.round(((prevSessions - cur) / prevSessions) * 100);
+        await fire('traffic_drop', `Sessions down ${pct}% vs previous period (${prevSessions} → ${cur})`, 'high');
+      }
+    }
+
+    // ── JS-error spike (Microsoft Clarity) ────────────────────────────────────
+    const { data: clarity } = await supabase
+      .from('clarity_snapshots')
+      .select('metrics, created_at')
+      .eq('site_id', site.id)
+      .order('created_at', { ascending: false })
+      .limit(2);
+    if (clarity && clarity.length === 2) {
+      const latestErr = Number((clarity[0].metrics as { jsErrors?: number } | null)?.jsErrors ?? 0);
+      const prevErr = Number((clarity[1].metrics as { jsErrors?: number } | null)?.jsErrors ?? 0);
+      if (latestErr >= JS_ERROR_MIN && latestErr >= Math.max(prevErr, 1) * JS_ERROR_SPIKE_FACTOR) {
+        await fire('js_error_spike', `JavaScript errors spiked ${prevErr} → ${latestErr} sessions affected`, 'medium');
+      }
+    }
+
+    // ── Conversion drop (WordPress form submissions, month over month) ────────
+    const { data: wp } = await supabase
+      .from('wordpress_snapshots')
+      .select('form_data, created_at')
+      .eq('site_id', site.id)
+      .order('created_at', { ascending: false })
+      .limit(1);
+    const forms = wp?.[0]?.form_data as
+      | Array<{ submissions_month?: number; submissions_prev_month?: number }>
+      | undefined;
+    if (Array.isArray(forms) && forms.length > 0) {
+      const curSub = forms.reduce((s, f) => s + (Number(f.submissions_month) || 0), 0);
+      const prevSub = forms.reduce((s, f) => s + (Number(f.submissions_prev_month) || 0), 0);
+      if (prevSub >= CONVERSION_MIN_PREV && curSub < prevSub * (1 - CONVERSION_DROP_PCT)) {
+        const pct = Math.round(((prevSub - curSub) / prevSub) * 100);
+        await fire('conversion_drop', `Form submissions down ${pct}% month-over-month (${prevSub} → ${curSub})`, 'high');
+      }
+    }
+  }
+
+  return { emailsSent, skipped, evaluated };
 }

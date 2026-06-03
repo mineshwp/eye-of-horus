@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { runAllSiteChecks } from "@/lib/checks/index";
-import { fireAlertsForCheckResults } from "@/lib/notifications/alerts";
+import { fireAlertsForCheckResults, fireAnalyticsAlerts } from "@/lib/notifications/alerts";
 import { fetchGAMetrics } from "@/lib/analytics/google-analytics";
 import { fetchGSCMetrics } from "@/lib/analytics/search-console";
 import { CLARITY_API_CALLS_PER_SYNC, ClarityApiError, DEFAULT_CLARITY_ENDPOINT_URL, fetchClarityMetrics } from "@/lib/analytics/clarity";
 import { fetchPageSpeedInsights } from "@/lib/performance/pagespeed";
+import { runAllSeoCrawls } from "@/lib/seo/crawl";
+import { detectBrokenJourneys, detectHighTraffic404s } from "@/lib/rum/analyze";
+import { detectDeployRegressions } from "@/lib/deploy/detect";
 
 // Force Node.js runtime — needed for SSL check tls module
 export const runtime = "nodejs";
@@ -88,7 +91,7 @@ export async function POST(request: NextRequest) {
     // Reads the configured sync time from global_settings (default "02:00" UTC).
     // The cron itself fires at the same time; this check is a safety guard so that
     // if the cron ever fires outside the expected window the sync is skipped.
-    let analyticsSyncResult: { synced: number; skipped: number; errors: number } = { synced: 0, skipped: 0, errors: 0 };
+    const analyticsSyncResult: { synced: number; skipped: number; errors: number } = { synced: 0, skipped: 0, errors: 0 };
 
     if (supabase) {
       try {
@@ -228,7 +231,7 @@ export async function POST(request: NextRequest) {
     // ── PageSpeed Insights sync ──────────────────────────────────────────────
     // Runs desktop + mobile PSI for every site. Two API calls per site per day.
     // At 25,000 free calls/day with an API key this comfortably handles 100+ sites.
-    let psiSyncResult: { synced: number; skipped: number; errors: number } = { synced: 0, skipped: 0, errors: 0 };
+    const psiSyncResult: { synced: number; skipped: number; errors: number } = { synced: 0, skipped: 0, errors: 0 };
 
     if (supabase) {
       try {
@@ -273,6 +276,82 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // ── SEO crawl ────────────────────────────────────────────────────────────
+    // Site-wide crawl: broken links, sitemap/robots, duplicate/missing meta,
+    // alt-text, schema, thin content. Runs one site at a time (heavier than checks).
+    const seoCrawlResult: { sites: number; issuesCreated: number; brokenLinks: number } = { sites: 0, issuesCreated: 0, brokenLinks: 0 };
+
+    try {
+      const crawls = await runAllSeoCrawls();
+      seoCrawlResult.sites = crawls.length;
+      seoCrawlResult.issuesCreated = crawls.reduce((sum, c) => sum + c.issuesCreated.length, 0);
+      seoCrawlResult.brokenLinks = crawls.reduce((sum, c) => sum + c.brokenLinks.length, 0);
+      console.log(`[cron/daily] SEO crawl complete — ${seoCrawlResult.sites} sites, ${seoCrawlResult.issuesCreated} new issues, ${seoCrawlResult.brokenLinks} broken links`);
+    } catch (seoErr) {
+      console.error("[cron/daily] SEO crawl failed:", seoErr);
+    }
+
+    // ── Analytics-based alerts (Phase 1c) ──────────────────────────────────────
+    // Runs after analytics/PSI/SEO so the latest snapshots are in place to diff.
+    // Email only for now — WhatsApp for these triggers is deferred.
+    const analyticsAlertResult = { emailsSent: 0, skipped: 0, evaluated: 0 };
+    try {
+      const r = await fireAnalyticsAlerts();
+      analyticsAlertResult.emailsSent = r.emailsSent;
+      analyticsAlertResult.skipped = r.skipped;
+      analyticsAlertResult.evaluated = r.evaluated;
+      console.log(`[cron/daily] Analytics alerts — ${r.emailsSent} emails sent, ${r.skipped} skipped, ${r.evaluated} triggers evaluated`);
+    } catch (alertErr) {
+      console.error("[cron/daily] Analytics alerts failed:", alertErr);
+    }
+
+    // ── Broken-journey detection (Phase 3) ─────────────────────────────────────
+    const journeyResult = { sitesChecked: 0, issuesCreated: 0 };
+    try {
+      const j = await detectBrokenJourneys();
+      journeyResult.sitesChecked = j.sitesChecked;
+      journeyResult.issuesCreated = j.issuesCreated;
+      console.log(`[cron/daily] Broken-journey analysis — ${j.issuesCreated} issues across ${j.sitesChecked} sites`);
+    } catch (jErr) {
+      console.error("[cron/daily] Broken-journey analysis failed:", jErr);
+    }
+
+    // ── Deploy-regression + high-traffic 404 detection (Phase 5) ───────────────
+    const deployResult = { deploys: 0, regressions: 0 };
+    try {
+      const d = await detectDeployRegressions();
+      deployResult.deploys = d.deploys;
+      deployResult.regressions = d.regressions;
+      console.log(`[cron/daily] Deploy detection — ${d.deploys} deploys, ${d.regressions} regressions`);
+    } catch (e) { console.error("[cron/daily] Deploy detection failed:", e); }
+
+    const high404Result = { issuesCreated: 0 };
+    try {
+      const h = await detectHighTraffic404s();
+      high404Result.issuesCreated = h.issuesCreated;
+      console.log(`[cron/daily] High-traffic 404 detection — ${h.issuesCreated} issues`);
+    } catch (e) { console.error("[cron/daily] High-traffic 404 detection failed:", e); }
+
+    // ── RUM data retention prune (Phase 4) ─────────────────────────────────────
+    // Data minimisation: drop real-user rows older than the configured window.
+    const rumPrune = { deleted: 0, retentionDays: 180 };
+    if (supabase) {
+      try {
+        const { data: rd } = await supabase.from("global_settings").select("value").eq("key", "rum_retention_days").maybeSingle();
+        const days = Math.max(7, parseInt(rd?.value ?? "180", 10) || 180);
+        rumPrune.retentionDays = days;
+        const cutoff = new Date(Date.now() - days * 86400000).toISOString();
+        const targets: Array<[string, string]> = [["rum_vitals", "created_at"], ["rum_events", "created_at"], ["rum_sessions", "started_at"]];
+        for (const [table, col] of targets) {
+          const { count } = await supabase.from(table).delete({ count: "exact" }).lt(col, cutoff);
+          rumPrune.deleted += count ?? 0;
+        }
+        console.log(`[cron/daily] RUM retention prune (${days}d) — deleted ${rumPrune.deleted} rows`);
+      } catch (pruneErr) {
+        console.error("[cron/daily] RUM prune failed:", pruneErr);
+      }
+    }
+
     return NextResponse.json({
       ok: true,
       checkedAt: new Date().toISOString(),
@@ -289,6 +368,12 @@ export async function POST(request: NextRequest) {
       },
       analyticsSync: analyticsSyncResult,
       psiSync: psiSyncResult,
+      seoCrawl: seoCrawlResult,
+      analyticsAlerts: analyticsAlertResult,
+      brokenJourneys: journeyResult,
+      deploys: deployResult,
+      highTraffic404s: high404Result,
+      rumPrune,
       sites: results.map((r) => ({
         siteId: r.siteId,
         siteName: r.siteName,

@@ -40,6 +40,10 @@ export default function WpUpdatesPage() {
     return true;
   });
 
+  // The /api/wordpress/update endpoint only supports plugin updates; core and
+  // theme updates aren't one-click and must be handled manually / via staging.
+  const isPluginTarget = (target: string) => target !== "WordPress Core" && !target.includes("Theme");
+
   const handleUpdate = async (id: string, target: string, siteId: string, siteName: string) => {
     if (updatingId) return;
     setUpdatingId(id);
@@ -63,18 +67,37 @@ export default function WpUpdatesPage() {
     }
   };
 
-  const handleRunSafeUpdates = () => {
-    const safeUpdates = localUpdates.filter((u) => u.flag === "Safe update");
+  const handleRunSafeUpdates = async () => {
+    if (updatingId) return;
+    const safeUpdates = localUpdates.filter((u) => u.flag === "Safe update" && isPluginTarget(u.target));
     if (safeUpdates.length === 0) {
-      showToast("No safe updates in queue.");
+      showToast("No safe plugin updates in queue.");
       return;
     }
     showToast(`Running ${safeUpdates.length} safe update${safeUpdates.length !== 1 ? "s" : ""}…`);
-    setTimeout(() => {
-      const safeIds = safeUpdates.map((u) => u.id);
-      setLocalUpdates((prev) => prev.filter((item) => !safeIds.includes(item.id)));
-      showToast(`${safeUpdates.length} update${safeUpdates.length !== 1 ? "s" : ""} completed successfully.`);
-    }, 1500);
+    let succeeded = 0;
+    for (const u of safeUpdates) {
+      setUpdatingId(u.id);
+      try {
+        const res = await apiFetch("/api/wordpress/update", {
+          method: "POST",
+          body: JSON.stringify({ siteId: u.siteId, pluginName: u.target }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          succeeded++;
+          setLocalUpdates((prev) => prev.filter((item) => item.id !== u.id));
+        }
+      } catch {
+        /* keep going with the remaining updates */
+      }
+    }
+    setUpdatingId(null);
+    showToast(
+      succeeded === safeUpdates.length
+        ? `${succeeded} update${succeeded !== 1 ? "s" : ""} completed successfully.`
+        : `${succeeded} of ${safeUpdates.length} update${safeUpdates.length !== 1 ? "s" : ""} completed — review the rest manually.`,
+    );
   };
 
   const handleStage = (target: string, siteName: string) => {
@@ -269,13 +292,14 @@ export default function WpUpdatesPage() {
                       Stage
                     </button>
                     <button
-                      className={`btn ${u.flag === "Safe update" ? "primary" : ""} sm`}
-                      disabled={u.flag === "Do not update" || updatingId === u.id}
-                      style={(u.flag === "Do not update" || updatingId !== null) ? { opacity: 0.5, cursor: "not-allowed" } : {}}
+                      className={`btn ${u.flag === "Safe update" && isPluginTarget(u.target) ? "primary" : ""} sm`}
+                      disabled={u.flag === "Do not update" || !isPluginTarget(u.target) || updatingId !== null}
+                      style={(u.flag === "Do not update" || !isPluginTarget(u.target) || updatingId !== null) ? { opacity: 0.5, cursor: "not-allowed" } : {}}
+                      title={!isPluginTarget(u.target) ? "Core and theme updates must be applied manually via staging" : undefined}
                       onClick={() => handleUpdate(u.id, u.target, site?.id ?? u.siteId, site?.name ?? "")}
                       type="button"
                     >
-                      {updatingId === u.id ? "Updating…" : "Update"}
+                      {updatingId === u.id ? "Updating…" : isPluginTarget(u.target) ? "Update" : "Manual"}
                     </button>
                   </div>
                 </div>

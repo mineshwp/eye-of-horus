@@ -21,7 +21,7 @@ export async function GET(
     .from('reports')
     .select('*')
     .eq('share_token', token)
-    .eq('status', 'ready')
+    .eq('status', 'approved')
     .single();
 
   if (error || !data) {

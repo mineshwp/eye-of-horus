@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAlertSettings, updateAlertSettings } from '@/lib/notifications/alerts';
 import { getApiUser, unauthorizedResponse } from '@/lib/auth/index';
+import { logAudit } from '@/lib/audit';
 
 export const runtime = 'nodejs';
 
@@ -27,6 +28,10 @@ export async function POST(request: NextRequest) {
     alertOnSslCritical,
     alertOnCriticalIssues,
     dedupWindowHours,
+    alertOnPerformanceDrop,
+    alertOnTrafficDrop,
+    alertOnJsErrors,
+    alertOnConversionDrop,
   } = body as {
     emailRecipients?: string[];
     whatsappRecipients?: string[];
@@ -36,6 +41,10 @@ export async function POST(request: NextRequest) {
     alertOnSslCritical?: boolean;
     alertOnCriticalIssues?: boolean;
     dedupWindowHours?: number;
+    alertOnPerformanceDrop?: boolean;
+    alertOnTrafficDrop?: boolean;
+    alertOnJsErrors?: boolean;
+    alertOnConversionDrop?: boolean;
   };
 
   const updates: Record<string, unknown> = {};
@@ -47,9 +56,15 @@ export async function POST(request: NextRequest) {
   if (alertOnSslCritical !== undefined) updates.alert_on_ssl_critical = alertOnSslCritical;
   if (alertOnCriticalIssues !== undefined) updates.alert_on_critical_issues = alertOnCriticalIssues;
   if (dedupWindowHours !== undefined) updates.dedup_window_hours = dedupWindowHours;
+  if (alertOnPerformanceDrop !== undefined) updates.alert_on_performance_drop = alertOnPerformanceDrop;
+  if (alertOnTrafficDrop !== undefined) updates.alert_on_traffic_drop = alertOnTrafficDrop;
+  if (alertOnJsErrors !== undefined) updates.alert_on_js_errors = alertOnJsErrors;
+  if (alertOnConversionDrop !== undefined) updates.alert_on_conversion_drop = alertOnConversionDrop;
 
   const ok = await updateAlertSettings(updates as Parameters<typeof updateAlertSettings>[0]);
   if (!ok) return NextResponse.json({ error: 'Failed to update settings' }, { status: 500 });
+
+  await logAudit({ actorEmail: user.email, action: 'alert_settings.update', targetType: 'alert_settings', detail: { keys: Object.keys(updates) } });
 
   const settings = await getAlertSettings();
   return NextResponse.json({ ok: true, settings });
