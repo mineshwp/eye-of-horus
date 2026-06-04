@@ -8,6 +8,7 @@ import { apiFetch } from "@/lib/auth/index";
 import { DEFAULT_CLARITY_ENDPOINT_URL } from "@/lib/analytics/clarity";
 import { formatBytes, type PerfOpportunity } from "@/lib/performance/opportunities";
 import WatchtowerConfig from "@/components/WatchtowerConfig";
+import InsightsCallout from "./InsightsCallout";
 import {
   Icon,
   Badge,
@@ -1064,7 +1065,7 @@ export default function SiteDetailPage({ params }: PageProps) {
         )}
 
         {tab === "Security" && (
-          <SecurityTab latestCheck={latestSecurityCheck} domainCheck={domainCheck} siteUrl={site.url} issues={siteIssues} wpSnapshot={wpSnapshot} />
+          <SecurityTab siteId={site.id} latestCheck={latestSecurityCheck} domainCheck={domainCheck} siteUrl={site.url} issues={siteIssues} wpSnapshot={wpSnapshot} />
         )}
 
         {tab === "Forms" && (
@@ -2102,6 +2103,26 @@ const AnalyticsTab = ({
 
   return (
     <>
+      <InsightsCallout
+        siteId={_site?.id}
+        section="analytics"
+        context={{
+          gaConnected: isConnected,
+          clarityConnected,
+          ga: gaMetrics,
+          clarity: clarity ?? null,
+          firstParty: rum?.hasData
+            ? {
+                rangeDays: rum.rangeDays,
+                sessions: { total: rum.sessions.total, returningPct: rum.sessions.returningPct, topSources: rum.sessions.topSources },
+                topCtas: rum.events.topCtas,
+                searchTerms: rum.events.searchTerms,
+                rageClicks: rum.events.rageClicks,
+                avgScrollDepth: rum.events.avgScrollDepth,
+              }
+            : null,
+        }}
+      />
       {/* Visitor behaviour — first-party data from the Eye of Horus tracking script */}
       <div style={{ marginBottom: 18 }}>
         <div className="label-strip" style={{ marginBottom: 10 }}>Visitor behaviour · Eye of Horus tracking</div>
@@ -2494,6 +2515,20 @@ const SeoTab = ({
 
   return (
     <>
+      <InsightsCallout
+        siteId={site?.id}
+        section="seo"
+        context={{
+          gscConnected: isConnected,
+          search: gscMetrics
+            ? { clicks: gscMetrics.clicks, impressions: gscMetrics.impressions, ctr: gscMetrics.ctr, position: gscMetrics.position, previousPeriod: gscMetrics.previousPeriod }
+            : null,
+          topQueries: gscQueries?.slice(0, 8) ?? null,
+          strikingDistance: strikingDistance.slice(0, 8),
+          audit: audit ?? null,
+          brokenLinks: { count: brokenLinks?.length ?? 0, sample: brokenLinks?.slice(0, 5) ?? [] },
+        }}
+      />
       {/* On-site crawl audit — broken links, sitemap/robots, meta, schema, alt text, thin content */}
       <div className="card" style={{ marginBottom: 18 }}>
         <div className="card-head">
@@ -4888,6 +4923,21 @@ const PerformanceTab = ({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <InsightsCallout
+        siteId={siteId}
+        section="performance"
+        context={{
+          latestPageSpeed: metrics?.[0] ?? null,
+          fieldVitals: rum?.hasData ? { rangeDays: rum.rangeDays, vitals: rum.vitals } : null,
+          uptime: {
+            checks: uptimeHistory?.length ?? 0,
+            up: uptimeHistory?.filter((c) => c.status === "up").length ?? 0,
+            recentStatuses: uptimeHistory?.slice(0, 10).map((c) => c.status) ?? [],
+          },
+          accessibility: { violations: a11yViolations?.length ?? 0, checkedAt: a11yCheckedAt },
+          openPerformanceIssues: issues.filter((i) => i.category === "performance").map((i) => ({ title: i.title, severity: i.severity })),
+        }}
+      />
       {/* Field Core Web Vitals — real users (vs the lab/PSI scores below) */}
       <div className="card">
         <div className="card-head">
@@ -5168,12 +5218,14 @@ const PerformanceTab = ({
 
 // ─── Security Tab ─────────────────────────────────────────────────────────────
 const SecurityTab = ({
+  siteId,
   latestCheck,
   domainCheck,
   siteUrl,
   issues,
   wpSnapshot,
 }: {
+  siteId: string;
   latestCheck: UptimeCheckRow | null;
   domainCheck: DomainCheckRow | null;
   siteUrl: string;
@@ -5210,6 +5262,18 @@ const SecurityTab = ({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <InsightsCallout
+        siteId={siteId}
+        section="security"
+        context={{
+          ssl: { valid: sslValid ?? null, daysRemaining: sslDays ?? null, expiry: sslExpiry ?? null },
+          domain: { daysRemaining: domainDays ?? null },
+          wordfence: wf ?? null,
+          securityData: secData ?? null,
+          attacks: attackRows,
+          openSecurityIssues: secIssues.map((i) => ({ title: i.title, severity: i.severity })),
+        }}
+      />
       {/* SSL + domain + WordPress KPI cards */}
       <div className="grid-4">
         <div className="card kpi-card">
