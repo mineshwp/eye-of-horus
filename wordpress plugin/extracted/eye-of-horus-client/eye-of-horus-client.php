@@ -3,7 +3,7 @@
  * Plugin Name: Eye of Horus Client
  * Plugin URI: https://wetpaint.co.za/
  * Description: Technical monitoring and reporting agent for the Eye of Horus Dashboard.
- * Version: 2.4.0
+ * Version: 2.4.1
  * Author: Eye of Horus
  * Author URI: https://wetpaint.co.za/
  * Text Domain: eye-of-horus-client
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 
 if (!class_exists('Eye_Of_Horus_Client')) {
     final class Eye_Of_Horus_Client {
-        const VERSION      = '2.4.0';
+        const VERSION      = '2.4.1';
         const OPTION_NAME  = 'eoh_settings';
         const CRON_HOOK    = 'eoh_daily_sync';
         const LAST_SYNC    = 'eoh_last_sync_result';
@@ -1063,8 +1063,11 @@ if (!class_exists('Eye_Of_Horus_Client')) {
 
             $wf_config_table = $wpdb->prefix . 'wfConfig';
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-            $table_check = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wf_config_table ) );
-            if ( $table_check !== $wf_config_table ) {
+            $table_check = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $wf_config_table ) ) );
+            // Use a presence check, not a strict ===: hosts with MySQL
+            // lower_case_table_names=1 return the name lowercased (wp_wfconfig),
+            // which a case-sensitive compare would wrongly treat as "not installed".
+            if ( empty( $table_check ) ) {
                 return null; // Wordfence not installed
             }
 
