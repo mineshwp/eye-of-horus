@@ -1030,7 +1030,7 @@ export default function SiteDetailPage({ params }: PageProps) {
         )}
 
         {tab === "Issues" && (
-          <IssuesTab site={site} issues={combinedSiteIssues} router={router} onNavigateToWp={() => setTab("WordPress")} onToggleComplete={(issueId, status) => updateIssue(issueId, { status })} />
+          <IssuesTab site={site} issues={combinedSiteIssues} router={router} onNavigateToWp={() => setTab("WordPress")} onToggleComplete={(issueId, status) => updateIssue(issueId, { status })} onRequestAutofix={(issueId) => updateIssue(issueId, { autofixRequested: true, autofixRequestedAt: new Date().toISOString() })} />
         )}
         {tab === "Analytics" && <AnalyticsTab site={site} snapshot={analyticsSnapshot} onRefresh={refreshAnalytics} refreshing={analyticsRefreshing} rum={rumSummary} />}
         {tab === "SEO" && <SeoTab site={site} snapshot={analyticsSnapshot} onRefresh={refreshAnalytics} refreshing={analyticsRefreshing} audit={seoAudit} brokenLinks={seoBrokenLinks} onCrawl={runSeoCrawl} crawling={seoCrawling} />}
@@ -1612,14 +1612,45 @@ interface IssuesTabProps {
   router: any;
   onNavigateToWp: () => void;
   onToggleComplete: (issueId: string, status: string) => void;
+  onRequestAutofix: (issueId: string) => Promise<boolean>;
 }
 
-const IssuesTab = ({ site, issues, router, onNavigateToWp, onToggleComplete }: IssuesTabProps) => {
+const IssuesTab = ({ site, issues, router, onNavigateToWp, onToggleComplete, onRequestAutofix }: IssuesTabProps) => {
   const [sev, setSev] = useState("All");
   const [expanded, setExpanded] = useState<string | null>(issues[0]?.id || null);
   const [groupByCategory, setGroupByCategory] = useState(false);
   const [issueToast, setIssueToast] = useState<string | null>(null);
+  const [autofixing, setAutofixing] = useState(false);
   const showIssueToast = (msg: string) => { setIssueToast(msg); setTimeout(() => setIssueToast(null), 3000); };
+
+  // "Safe" = low-severity, still-open issues that haven't already been queued.
+  const safeIssues = issues.filter(
+    (i) =>
+      i.severity === "low" &&
+      !i.autofixRequested &&
+      i.status !== "Resolved" &&
+      i.status !== "Ignored",
+  );
+
+  const handleAutofix = async () => {
+    if (autofixing) return;
+    if (safeIssues.length === 0) {
+      showIssueToast("No safe issues to auto-fix right now.");
+      return;
+    }
+    setAutofixing(true);
+    let queued = 0;
+    for (const issue of safeIssues) {
+      const ok = await onRequestAutofix(issue.id);
+      if (ok) queued++;
+    }
+    setAutofixing(false);
+    showIssueToast(
+      queued > 0
+        ? `Auto-fix queued for ${queued} safe issue${queued !== 1 ? "s" : ""}. Results appear after the next scan.`
+        : "Could not queue auto-fixes — please try again.",
+    );
+  };
 
   const filters = [
     { k: "All", n: issues.length },
@@ -1680,10 +1711,12 @@ const IssuesTab = ({ site, issues, router, onNavigateToWp, onToggleComplete }: I
           </button>
           <button
             className="btn primary sm"
-            onClick={() => showIssueToast("Auto-fix queued for safe issues. Results will appear after the next scan.")}
+            onClick={handleAutofix}
+            disabled={autofixing || safeIssues.length === 0}
+            title={safeIssues.length === 0 ? "No low-severity issues to queue" : undefined}
             type="button"
           >
-            <Icon name="sparkles" size={12} /> Auto-fix safe issues
+            <Icon name="sparkles" size={12} /> {autofixing ? "Queueing…" : `Auto-fix safe issues${safeIssues.length > 0 ? ` · ${safeIssues.length}` : ""}`}
           </button>
         </div>
       </div>

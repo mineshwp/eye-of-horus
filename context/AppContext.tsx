@@ -41,6 +41,11 @@ export interface Issue {
   changeType: string;
   confidence: number;
   evidence: any;
+  clientFacing?: boolean;
+  escalatedAt?: string | null;
+  snoozedUntil?: string | null;
+  autofixRequested?: boolean;
+  autofixRequestedAt?: string | null;
 }
 
 export interface WpUpdate {
@@ -53,6 +58,8 @@ export interface WpUpdate {
   priority: string;
   notes: string;
   flag: string;
+  skippedUntil?: string | null;
+  stagingStatus?: string | null;
 }
 
 export interface Activity {
@@ -273,6 +280,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         changeType: i.change_type,
         confidence: Number(i.confidence),
         evidence: i.evidence || {},
+        clientFacing: !!i.client_facing,
+        escalatedAt: i.escalated_at ?? null,
+        snoozedUntil: i.snoozed_until ?? null,
+        autofixRequested: !!i.autofix_requested,
+        autofixRequestedAt: i.autofix_requested_at ?? null,
       }));
 
       const mappedWpUpdates: WpUpdate[] = (dbWpUpdates || []).map((u: any) => ({
@@ -285,6 +297,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         priority: u.priority,
         notes: u.notes,
         flag: u.flag,
+        skippedUntil: u.skipped_until ?? null,
+        stagingStatus: u.staging_status ?? null,
       }));
 
       const mappedActivities: Activity[] = (dbActivities || []).map((a: any) => ({
@@ -317,6 +331,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (updates.status !== undefined) dbUpdates.status = updates.status;
       if (updates.owner !== undefined) dbUpdates.owner = updates.owner;
       if (updates.severity !== undefined) dbUpdates.severity = updates.severity;
+      if (updates.clientFacing !== undefined) dbUpdates.client_facing = updates.clientFacing;
+      if (updates.escalatedAt !== undefined) dbUpdates.escalated_at = updates.escalatedAt;
+      if (updates.snoozedUntil !== undefined) dbUpdates.snoozed_until = updates.snoozedUntil;
+      if (updates.autofixRequested !== undefined) dbUpdates.autofix_requested = updates.autofixRequested;
+      if (updates.autofixRequestedAt !== undefined) dbUpdates.autofix_requested_at = updates.autofixRequestedAt;
 
       const { error } = await supabase
         .from("issues")

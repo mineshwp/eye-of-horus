@@ -13,6 +13,22 @@ interface PluginData {
   update_available?: boolean;
 }
 
+interface ThemeData {
+  name?: string;
+  stylesheet?: string;
+  version?: string;
+  new_version?: string | null;
+  update_available?: boolean;
+}
+
+type UpdateKind = "core" | "theme" | "plugin";
+
+function classifyTarget(target: string): UpdateKind {
+  if (target === "WordPress Core") return "core";
+  if (/\bTheme$/.test(target)) return "theme";
+  return "plugin";
+}
+
 function getServerClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -23,17 +39,20 @@ export async function POST(request: NextRequest) {
   const user = await getApiUser(request);
   if (!user) return unauthorizedResponse();
 
-  let body: { siteId?: string; pluginName?: string };
+  let body: { siteId?: string; pluginName?: string; target?: string };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { siteId, pluginName } = body;
-  if (!siteId || !pluginName) {
-    return NextResponse.json({ error: "siteId and pluginName are required" }, { status: 400 });
+  const { siteId } = body;
+  // `target` is the wp_updates display name; `pluginName` is the legacy field.
+  const target = body.target ?? body.pluginName;
+  if (!siteId || !target) {
+    return NextResponse.json({ error: "siteId and target are required" }, { status: 400 });
   }
+  const kind = classifyTarget(target);
 
   const supabase = getServerClient();
 
@@ -53,28 +72,52 @@ export async function POST(request: NextRequest) {
 
   const { data: snapshot } = await supabase
     .from("wordpress_snapshots")
-    .select("plugin_data")
+    .select("plugin_data, theme_data")
     .eq("site_id", siteId)
     .order("created_at", { ascending: false })
     .limit(1)
     .single();
 
-  let pluginFile: string | null = null;
-  if (snapshot?.plugin_data) {
-    const plugins: PluginData[] = Array.isArray(snapshot.plugin_data) ? snapshot.plugin_data : [];
-    const match = plugins.find((p) => p.name === pluginName || p.file?.split("/").pop()?.replace(".php", "") === pluginName);
-    if (match?.file) pluginFile = match.file;
-  }
-
-  if (!pluginFile) {
-    return NextResponse.json(
-      { error: `Could not locate plugin file for "${pluginName}". The WordPress plugin may not have synced recently.` },
-      { status: 400 },
-    );
-  }
-
+  // Resolve the correct WP plugin endpoint + payload for the target kind.
   const siteUrl = site.url.replace(/\/$/, "");
-  const wpEndpoint = `${siteUrl}/wp-json/eye-of-horus/v1/update-plugin`;
+  let wpEndpoint: string;
+  let wpBody: Record<string, unknown>;
+
+  if (kind === "core") {
+    wpEndpoint = `${siteUrl}/wp-json/eye-of-horus/v1/update-core`;
+    wpBody = {};
+  } else if (kind === "theme") {
+    const themes: ThemeData[] = Array.isArray(snapshot?.theme_data)
+      ? (snapshot!.theme_data as ThemeData[])
+      : snapshot?.theme_data ? [snapshot.theme_data as ThemeData] : [];
+    // wp_updates target for themes is "<Name> Theme" — match on the name.
+    const themeName = target.replace(/\s+Theme$/, "");
+    const match = themes.find((t) => t.name === themeName || `${t.name} Theme` === target);
+    const stylesheet = match?.stylesheet;
+    if (!stylesheet) {
+      return NextResponse.json(
+        { error: `Could not locate the theme stylesheet for "${target}". Re-sync the site (plugin v2.5.0+) and try again.` },
+        { status: 400 },
+      );
+    }
+    wpEndpoint = `${siteUrl}/wp-json/eye-of-horus/v1/update-theme`;
+    wpBody = { stylesheet };
+  } else {
+    let pluginFile: string | null = null;
+    if (snapshot?.plugin_data) {
+      const plugins: PluginData[] = Array.isArray(snapshot.plugin_data) ? snapshot.plugin_data : [];
+      const match = plugins.find((p) => p.name === target || p.file?.split("/").pop()?.replace(".php", "") === target);
+      if (match?.file) pluginFile = match.file;
+    }
+    if (!pluginFile) {
+      return NextResponse.json(
+        { error: `Could not locate plugin file for "${target}". The WordPress plugin may not have synced recently.` },
+        { status: 400 },
+      );
+    }
+    wpEndpoint = `${siteUrl}/wp-json/eye-of-horus/v1/update-plugin`;
+    wpBody = { plugin_file: pluginFile };
+  }
 
   let wpResponse: Response;
   try {
@@ -84,7 +127,7 @@ export async function POST(request: NextRequest) {
         "Content-Type": "application/json",
         "X-EOH-KEY": site.api_key as string,
       },
-      body: JSON.stringify({ plugin_file: pluginFile }),
+      body: JSON.stringify(wpBody),
       signal: AbortSignal.timeout(55000),
     });
   } catch (err) {
@@ -113,14 +156,14 @@ export async function POST(request: NextRequest) {
     .from("wp_updates")
     .delete()
     .eq("site_id", siteId)
-    .eq("target", pluginName);
+    .eq("target", target);
 
   await supabase
     .from("issues")
     .update({ status: "Resolved" })
     .eq("site_id", siteId)
     .eq("category", "WordPress update")
-    .eq("title", `${pluginName} update available`)
+    .eq("title", `${target} update available`)
     .in("status", ["New", "Investigating", "In Progress"]);
 
   const { count } = await supabase
@@ -137,15 +180,15 @@ export async function POST(request: NextRequest) {
   await supabase.from("activities").insert([{
     time: new Date().toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }),
     site_name: site.name,
-    text: `${pluginName} updated successfully`,
+    text: `${target} updated successfully`,
     sev: "low",
     type: "wp",
   }]);
 
   return NextResponse.json({
     ok: true,
-    message: `${pluginName} updated successfully`,
-    pluginFile,
+    message: `${target} updated successfully`,
+    kind,
     detail: wpResult,
   });
 }

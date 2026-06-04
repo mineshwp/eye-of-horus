@@ -209,6 +209,20 @@ export async function sendAlert(payload: AlertPayload): Promise<{
   const settings = await getAlertSettings();
   if (!settings) return { emailsSent: 0, whatsappSent: 0, skipped: 0 };
 
+  // Respect a manual snooze on the linked issue (Issue detail → "Snooze · 24h").
+  if (payload.issueId) {
+    const { data: snoozedIssue } = await supabase
+      .from('issues')
+      .select('snoozed_until')
+      .eq('id', payload.issueId)
+      .maybeSingle();
+    const snoozedUntil = (snoozedIssue as { snoozed_until?: string | null } | null)?.snoozed_until;
+    if (snoozedUntil && new Date(snoozedUntil).getTime() > Date.now()) {
+      console.log(`[alerts] Snooze skip — issue ${payload.issueId} snoozed until ${snoozedUntil}`);
+      return { emailsSent: 0, whatsappSent: 0, skipped: 1 };
+    }
+  }
+
   // Check if this alert type is enabled
   if (payload.alertType === 'site_down' && !settings.alert_on_site_down) {
     return { emailsSent: 0, whatsappSent: 0, skipped: 1 };
@@ -312,12 +326,13 @@ export async function sendAlert(payload: AlertPayload): Promise<{
           issueId: payload.issueId,
           channel: 'whatsapp',
           recipient,
-          status: result.sent ? 'sent' : 'failed',
+          status: result.skipped ? 'skipped' : result.sent ? 'sent' : 'failed',
           alertType: payload.alertType,
           message: waBody,
           error: result.error,
         });
         if (result.sent) whatsappSent++;
+        else if (result.skipped) skipped++;
       }
     }
   }

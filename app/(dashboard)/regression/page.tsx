@@ -3,6 +3,8 @@
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useApp } from "@/context/AppContext";
+import { supabase } from "@/lib/supabase";
+import { apiFetch } from "@/lib/auth/index";
 import {
   Icon,
   Badge,
@@ -10,14 +12,26 @@ import {
   Favicon,
 } from "@/components/ui";
 
+interface LatestCheck {
+  id: string;
+  url: string | null;
+  screenshot_url: string | null;
+  diff_url: string | null;
+  review_status: string | null;
+}
+
 export default function RegressionPage() {
   const router = useRouter();
-  const { sites, issues } = useApp();
+  const { sites, issues, refreshData } = useApp();
 
   const [selectedSiteId, setSelectedSiteId] = useState("");
   const [viewport, setViewport] = useState("Desktop");
   const [toast, setToast] = useState<string | null>(null);
+  const [latestCheck, setLatestCheck] = useState<LatestCheck | null>(null);
+  const [busy, setBusy] = useState(false);
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
+
+  const deviceKey = viewport.toLowerCase(); // 'desktop' | 'tablet' | 'mobile'
 
   // Default to first site once data loads
   useEffect(() => {
@@ -35,22 +49,116 @@ export default function RegressionPage() {
       )
     : [];
 
-  const handleApprove = () => {
-    if (!site) return;
-    showToast(`Baseline approved for ${site.name} · ${viewport}.`);
-  };
+  // Load the latest real Playwright scan for the selected site + viewport.
+  useEffect(() => {
+    if (!site) { setLatestCheck(null); return; }
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from("playwright_checks")
+        .select("id, url, screenshot_url, diff_url, review_status")
+        .eq("site_id", site.id)
+        .eq("device", deviceKey)
+        .order("checked_at", { ascending: false })
+        .limit(1);
+      if (!cancelled) setLatestCheck((data?.[0] as LatestCheck) ?? null);
+    })();
+    return () => { cancelled = true; };
+  }, [site, deviceKey]);
 
-  const handleFlag = () => {
-    if (!site) return;
-    if (regressionIssues.length > 0) {
-      router.push(`/issues/${regressionIssues[0].id}`);
-    } else {
-      showToast(`Visual regression ticket created for ${site.name}.`);
+  const handleApprove = async () => {
+    if (!site || busy) return;
+    if (!latestCheck?.screenshot_url) {
+      showToast("No captured scan for this viewport yet — run a Watchtower check first.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await apiFetch("/api/playwright/baseline", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          siteId: site.id,
+          device: deviceKey,
+          screenshotUrl: latestCheck.screenshot_url,
+          pagePath: latestCheck.url ?? "/",
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        await supabase
+          .from("playwright_checks")
+          .update({ review_status: "approved", reviewed_at: new Date().toISOString() })
+          .eq("id", latestCheck.id);
+        setLatestCheck((c) => (c ? { ...c, review_status: "approved" } : c));
+        showToast(`Baseline approved for ${site.name} · ${viewport}.`);
+      } else {
+        showToast(`Could not set baseline: ${data.error ?? "unknown error"}`);
+      }
+    } catch {
+      showToast("Could not reach the server to set the baseline.");
+    } finally {
+      setBusy(false);
     }
   };
 
-  const handleDefer = () => {
-    showToast("Review deferred. Will surface at next team sync.");
+  const handleFlag = async () => {
+    if (!site || busy) return;
+    // If a regression ticket already exists for this site, jump straight to it.
+    if (regressionIssues.length > 0) {
+      router.push(`/issues/${regressionIssues[0].id}`);
+      return;
+    }
+    setBusy(true);
+    try {
+      const issueId = `vr-${crypto.randomUUID().slice(0, 8)}`;
+      const { error } = await supabase.from("issues").insert([{
+        id: issueId,
+        site_id: site.id,
+        title: `Visual regression detected · ${viewport}`,
+        severity: "medium",
+        impact: "Layout differs from the approved baseline and needs review.",
+        category: "Visual regression",
+        page: latestCheck?.url ?? "/",
+        recommended: "Compare the current scan against the baseline and confirm whether the change is intended.",
+        owner: "Unassigned",
+        status: "New",
+        detected: new Date().toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }),
+        change_type: "Visual change",
+        confidence: 90,
+        evidence: latestCheck ? { checkId: latestCheck.id, diffUrl: latestCheck.diff_url } : {},
+      }]);
+      if (error) { showToast("Could not create the regression ticket."); return; }
+      if (latestCheck) {
+        await supabase
+          .from("playwright_checks")
+          .update({ review_status: "flagged", reviewed_at: new Date().toISOString() })
+          .eq("id", latestCheck.id);
+      }
+      await refreshData();
+      router.push(`/issues/${issueId}`);
+    } catch {
+      showToast("Could not create the regression ticket.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDefer = async () => {
+    if (!site || busy) return;
+    if (!latestCheck) {
+      showToast("No captured scan to defer for this viewport yet.");
+      return;
+    }
+    setBusy(true);
+    const { error } = await supabase
+      .from("playwright_checks")
+      .update({ review_status: "deferred", reviewed_at: new Date().toISOString() })
+      .eq("id", latestCheck.id);
+    setBusy(false);
+    if (error) { showToast("Could not defer the review."); return; }
+    setLatestCheck((c) => (c ? { ...c, review_status: "deferred" } : c));
+    showToast("Review deferred — it will resurface at the next standup.");
   };
 
   if (sites.length === 0) {
@@ -90,10 +198,10 @@ export default function RegressionPage() {
           </p>
         </div>
         <div style={{ display: "flex", gap: 10 }}>
-          <button className="btn" onClick={handleFlag} type="button">
+          <button className="btn" onClick={handleFlag} disabled={busy} type="button">
             Flag as issue
           </button>
-          <button className="btn primary" onClick={handleApprove} type="button">
+          <button className="btn primary" onClick={handleApprove} disabled={busy} type="button">
             <Icon name="check" size={13} /> Approve change
           </button>
         </div>
@@ -209,13 +317,13 @@ export default function RegressionPage() {
                 Once you decide on this scan, Horus will use it as the new baseline for future comparisons.
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                <button className="btn primary full" onClick={handleApprove} type="button">
+                <button className="btn primary full" onClick={handleApprove} disabled={busy} type="button">
                   <Icon name="check" size={13} /> Approve change · set new baseline
                 </button>
-                <button className="btn full" onClick={handleFlag} type="button">
+                <button className="btn full" onClick={handleFlag} disabled={busy} type="button">
                   <Icon name="x" size={13} /> Flag as issue · open ticket
                 </button>
-                <button className="btn ghost full" onClick={handleDefer} type="button">
+                <button className="btn ghost full" onClick={handleDefer} disabled={busy} type="button">
                   Defer · review at standup
                 </button>
               </div>

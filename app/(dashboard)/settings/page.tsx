@@ -26,6 +26,17 @@ interface AlertSettings {
   alert_on_conversion_drop?: boolean;
 }
 
+interface AlertRuleRow {
+  id: string;
+  severity: string;
+  trigger: string;
+  channels: string;
+  template: string | null;
+  enabled: boolean;
+  is_builtin: boolean;
+  sort_order: number;
+}
+
 export default function SettingsPage() {
   const { sites } = useApp();
   const router = useRouter();
@@ -66,6 +77,13 @@ export default function SettingsPage() {
   const [newEmailRecipient, setNewEmailRecipient] = useState('');
   const [newWaRecipient, setNewWaRecipient] = useState('');
   const [testAlertStatus, setTestAlertStatus] = useState<string | null>(null);
+
+  // Custom alert rules (persisted in alert_rules)
+  const [alertRules, setAlertRules] = useState<AlertRuleRow[]>([]);
+  const [rulesBusy, setRulesBusy] = useState(false);
+
+  // Integration config status (from /api/health)
+  const [healthItems, setHealthItems] = useState<{ key: string; label: string; configured: boolean }[]>([]);
 
   // Analytics auto-sync time (stored in global_settings, "HH:MM" UTC)
   const [analyticsSyncTime, setAnalyticsSyncTime] = useState('02:00');
@@ -115,10 +133,72 @@ export default function SettingsPage() {
     }
   };
 
+  const fetchAlertRules = useCallback(async () => {
+    try {
+      const res = await apiFetch('/api/alerts/rules');
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.rules)) setAlertRules(data.rules);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  const saveAlertRule = async (rule: { id?: string; severity: string; trigger: string; channels: string }) => {
+    setRulesBusy(true);
+    try {
+      const res = await apiFetch('/api/alerts/rules', {
+        method: rule.id ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(rule),
+      });
+      if (res.ok) {
+        await fetchAlertRules();
+        showToast(rule.id ? 'Alert rule updated.' : 'Custom alert rule added.');
+      } else {
+        const data = await res.json().catch(() => ({}));
+        showToast(`Could not save rule: ${data.error ?? 'unknown error'}`);
+      }
+    } finally {
+      setRulesBusy(false);
+    }
+  };
+
+  const toggleAlertRule = async (id: string, enabled: boolean) => {
+    setAlertRules((prev) => prev.map((r) => (r.id === id ? { ...r, enabled } : r)));
+    await apiFetch('/api/alerts/rules', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, enabled }),
+    });
+  };
+
+  const deleteAlertRule = async (id: string) => {
+    const res = await apiFetch(`/api/alerts/rules?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (res.ok) {
+      setAlertRules((prev) => prev.filter((r) => r.id !== id));
+      showToast('Alert rule removed.');
+    } else {
+      const data = await res.json().catch(() => ({}));
+      showToast(data.error ?? 'Could not remove rule.');
+    }
+  };
+
+  const fetchHealth = useCallback(async () => {
+    try {
+      const res = await apiFetch('/api/health');
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.items)) setHealthItems(data.items);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
   useEffect(() => {
     fetchAlertSettings();
     fetchAnalyticsSyncTime();
-  }, [fetchAlertSettings, fetchAnalyticsSyncTime]);
+    fetchAlertRules();
+    fetchHealth();
+  }, [fetchAlertSettings, fetchAnalyticsSyncTime, fetchAlertRules, fetchHealth]);
 
   const saveAlertSettings = async (updates: Partial<AlertSettings>) => {
     if (!alertSettings) return;
@@ -499,15 +579,58 @@ export default function SettingsPage() {
               </h3>
             </div>
             <div className="card-pad">
-              <AlertRule severity="critical" trigger="Critical issue detected" channels="Email alert recipients · WhatsApp if configured" onEdit={() => showToast("Custom alert templates coming soon.")} />
-              <AlertRule severity="high" trigger="High severity issue · client-facing impact" channels="Email alert recipients" onEdit={() => showToast("Custom alert templates coming soon.")} />
-              <AlertRule severity="medium" trigger="Visual change detected · awaiting review" channels="Daily digest" onEdit={() => showToast("Custom alert templates coming soon.")} />
-              <AlertRule severity="info" trigger="WordPress update available · low risk" channels="Weekly digest" onEdit={() => showToast("Custom alert templates coming soon.")} />
+              {alertRules.length === 0 && (
+                <div className="dim" style={{ fontSize: 13, padding: "8px 0" }}>No alert rules yet.</div>
+              )}
+              {alertRules.map((rule) => (
+                <AlertRule
+                  key={rule.id}
+                  rule={rule}
+                  busy={rulesBusy}
+                  onSave={(updates) => saveAlertRule({ id: rule.id, severity: updates.severity, trigger: updates.trigger, channels: updates.channels })}
+                  onToggle={(enabled) => toggleAlertRule(rule.id, enabled)}
+                  onDelete={rule.is_builtin ? undefined : () => deleteAlertRule(rule.id)}
+                />
+              ))}
               <div style={{ marginTop: 12 }}>
-                <button className="btn ghost sm" onClick={() => showToast("Custom alert rules coming soon.")} type="button">
+                <button
+                  className="btn ghost sm"
+                  disabled={rulesBusy}
+                  onClick={() => saveAlertRule({ severity: "medium", trigger: "New custom alert rule", channels: "Email alert recipients" })}
+                  type="button"
+                >
                   <Icon name="plus" size={12} /> Add custom rule
                 </button>
               </div>
+            </div>
+          </div>
+
+          {/* Integrations status */}
+          <div className="card">
+            <div className="card-head">
+              <h3>
+                <Icon name="bolt" size={14} /> Integrations status
+              </h3>
+              <span className="muted" style={{ fontSize: 11 }}>Server-side configuration — features without a key silently no-op.</span>
+            </div>
+            <div className="card-pad">
+              {healthItems.length === 0 ? (
+                <div className="dim" style={{ fontSize: 13 }}>Checking integration status…</div>
+              ) : (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 10 }}>
+                  {healthItems.map((item) => (
+                    <div
+                      key={item.key}
+                      style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", border: "1px solid var(--border-soft)", borderRadius: 8 }}
+                    >
+                      <Badge tone={item.configured ? "ok" : "high"} dot>
+                        {item.configured ? "Configured" : "Not set"}
+                      </Badge>
+                      <span style={{ fontSize: 13 }}>{item.label}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
@@ -992,9 +1115,60 @@ const VpToggle = ({ label, icon, on, onClick }: { label: string; icon: string; o
   </button>
 );
 
-const AlertRule = ({ severity, trigger, channels, onEdit }: { severity: string; trigger: string; channels: string; onEdit?: () => void }) => {
-  const tone = severity === "critical" ? ("crit" as const) : severity === "high" ? ("high" as const) : severity === "medium" ? ("med" as const) : ("info" as const);
-  const label = severity.charAt(0).toUpperCase() + severity.slice(1);
+const AlertRule = ({
+  rule,
+  busy,
+  onSave,
+  onToggle,
+  onDelete,
+}: {
+  rule: { id: string; severity: string; trigger: string; channels: string; enabled: boolean; is_builtin: boolean };
+  busy?: boolean;
+  onSave: (updates: { severity: string; trigger: string; channels: string }) => void;
+  onToggle: (enabled: boolean) => void;
+  onDelete?: () => void;
+}) => {
+  const [editing, setEditing] = useState(false);
+  const [severity, setSeverity] = useState(rule.severity);
+  const [trigger, setTrigger] = useState(rule.trigger);
+  const [channels, setChannels] = useState(rule.channels);
+
+  const tone = rule.severity === "critical" ? ("crit" as const) : rule.severity === "high" ? ("high" as const) : rule.severity === "medium" ? ("med" as const) : ("info" as const);
+  const label = rule.severity.charAt(0).toUpperCase() + rule.severity.slice(1);
+
+  const startEdit = () => {
+    setSeverity(rule.severity);
+    setTrigger(rule.trigger);
+    setChannels(rule.channels);
+    setEditing(true);
+  };
+  const save = () => {
+    if (!trigger.trim()) return;
+    onSave({ severity, trigger: trigger.trim(), channels: channels.trim() });
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "14px 0", borderBottom: "1px solid var(--border-soft)" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <select className="select" value={severity} onChange={(e) => setSeverity(e.target.value)} style={{ width: 130 }}>
+            <option value="critical">Critical</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="info">Info</option>
+          </select>
+          <input className="input" value={trigger} onChange={(e) => setTrigger(e.target.value)} placeholder="Trigger description" style={{ flex: 1 }} />
+        </div>
+        <input className="input" value={channels} onChange={(e) => setChannels(e.target.value)} placeholder="Channels (e.g. Email alert recipients · WhatsApp)" />
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn primary sm" onClick={save} disabled={busy} type="button">Save</button>
+          <button className="btn ghost sm" onClick={() => setEditing(false)} type="button">Cancel</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       style={{
@@ -1003,21 +1177,30 @@ const AlertRule = ({ severity, trigger, channels, onEdit }: { severity: string; 
         gap: 14,
         alignItems: "center",
         padding: "14px 0",
-        borderBottom: "1px solid var(--border-soft)"
+        borderBottom: "1px solid var(--border-soft)",
+        opacity: rule.enabled ? 1 : 0.55,
       }}
     >
       <Badge tone={tone} dot lg>
         {label}
       </Badge>
       <div>
-        <div style={{ fontSize: 13.5, fontWeight: 500 }}>{trigger}</div>
+        <div style={{ fontSize: 13.5, fontWeight: 500 }}>{rule.trigger}</div>
         <div className="dim" style={{ fontSize: 12, marginTop: 2 }}>
-          {channels}
+          {rule.channels || "No channels set"}
         </div>
       </div>
-      <button className="btn ghost sm" onClick={onEdit} type="button">
-        Edit
-      </button>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <Toggle on={rule.enabled} onClick={() => onToggle(!rule.enabled)} />
+        <button className="btn ghost sm" onClick={startEdit} type="button">
+          Edit
+        </button>
+        {onDelete && (
+          <button className="btn ghost sm" onClick={onDelete} title="Delete rule" type="button">
+            <Icon name="x" size={12} />
+          </button>
+        )}
+      </div>
     </div>
   );
 };

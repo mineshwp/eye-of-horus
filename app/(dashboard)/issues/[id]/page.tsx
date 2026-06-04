@@ -48,6 +48,30 @@ export default function IssueDetailPage({ params }: PageProps) {
   const [teamMembers, setTeamMembers] = useState<string[]>(["Unassigned"]);
   const [toast, setToast] = useState<string | null>(null);
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
+  const [escalating, setEscalating] = useState(false);
+  const [snoozing, setSnoozing] = useState(false);
+
+  const handleEscalate = async () => {
+    if (!issue || escalating) return;
+    setEscalating(true);
+    const ok = await updateIssue(issue.id, {
+      clientFacing: true,
+      escalatedAt: new Date().toISOString(),
+    });
+    setEscalating(false);
+    showToast(ok ? "Issue escalated — flagged for the next client-facing report." : "Could not escalate — please try again.");
+  };
+
+  const handleSnooze = async () => {
+    if (!issue || snoozing) return;
+    setSnoozing(true);
+    const until = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const ok = await updateIssue(issue.id, { snoozedUntil: until });
+    setSnoozing(false);
+    showToast(ok ? "Alerts snoozed for 24 hours." : "Could not snooze — please try again.");
+  };
+
+  const snoozeActive = !!issue?.snoozedUntil && new Date(issue.snoozedUntil) > new Date();
 
   useEffect(() => {
     if (issue) {
@@ -412,13 +436,16 @@ export default function IssueDetailPage({ params }: PageProps) {
 
               <button
                 className="btn primary full"
-                onClick={() => showToast("Issue escalated — add it to the next client-facing report.")}
+                onClick={handleEscalate}
+                disabled={escalating || issue.clientFacing}
                 type="button"
               >
-                Escalate to client-facing
+                {issue.clientFacing ? "✓ Escalated to client-facing" : escalating ? "Escalating…" : "Escalate to client-facing"}
               </button>
-              <button className="btn full" onClick={() => showToast("Alerts snoozed for 24 hours.")} type="button">
-                Snooze · 24 hours
+              <button className="btn full" onClick={handleSnooze} disabled={snoozing} type="button">
+                {snoozeActive
+                  ? `Snoozed until ${new Date(issue.snoozedUntil as string).toLocaleString("en-ZA", { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })}`
+                  : snoozing ? "Snoozing…" : "Snooze · 24 hours"}
               </button>
             </div>
           </div>

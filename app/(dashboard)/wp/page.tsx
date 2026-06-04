@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { useApp } from "@/context/AppContext";
 import { apiFetch } from "@/lib/auth/index";
+import { supabase } from "@/lib/supabase";
 import {
   Icon,
   Badge,
@@ -26,7 +27,11 @@ export default function WpUpdatesPage() {
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 4000); };
 
   useEffect(() => {
-    setLocalUpdates(wpUpdates);
+    // Hide updates that have been skipped and whose 30-day window hasn't elapsed.
+    const now = Date.now();
+    setLocalUpdates(
+      wpUpdates.filter((u) => !u.skippedUntil || new Date(u.skippedUntil).getTime() <= now),
+    );
   }, [wpUpdates]);
 
   const filters = ["All", "Core", "Plugins", "Themes", "Critical risk"];
@@ -40,10 +45,6 @@ export default function WpUpdatesPage() {
     return true;
   });
 
-  // The /api/wordpress/update endpoint only supports plugin updates; core and
-  // theme updates aren't one-click and must be handled manually / via staging.
-  const isPluginTarget = (target: string) => target !== "WordPress Core" && !target.includes("Theme");
-
   const handleUpdate = async (id: string, target: string, siteId: string, siteName: string) => {
     if (updatingId) return;
     setUpdatingId(id);
@@ -51,7 +52,7 @@ export default function WpUpdatesPage() {
     try {
       const res = await apiFetch("/api/wordpress/update", {
         method: "POST",
-        body: JSON.stringify({ siteId, pluginName: target }),
+        body: JSON.stringify({ siteId, target }),
       });
       const data = await res.json();
       if (data.ok) {
@@ -69,9 +70,9 @@ export default function WpUpdatesPage() {
 
   const handleRunSafeUpdates = async () => {
     if (updatingId) return;
-    const safeUpdates = localUpdates.filter((u) => u.flag === "Safe update" && isPluginTarget(u.target));
+    const safeUpdates = localUpdates.filter((u) => u.flag === "Safe update");
     if (safeUpdates.length === 0) {
-      showToast("No safe plugin updates in queue.");
+      showToast("No safe updates in queue.");
       return;
     }
     showToast(`Running ${safeUpdates.length} safe update${safeUpdates.length !== 1 ? "s" : ""}…`);
@@ -81,7 +82,7 @@ export default function WpUpdatesPage() {
       try {
         const res = await apiFetch("/api/wordpress/update", {
           method: "POST",
-          body: JSON.stringify({ siteId: u.siteId, pluginName: u.target }),
+          body: JSON.stringify({ siteId: u.siteId, target: u.target }),
         });
         const data = await res.json();
         if (data.ok) {
@@ -100,8 +101,33 @@ export default function WpUpdatesPage() {
     );
   };
 
-  const handleStage = (target: string, siteName: string) => {
-    showToast(`Staging queued for ${target} on ${siteName}.`);
+  const handleSkip = async (id: string, target: string) => {
+    const until = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    const { error } = await supabase
+      .from("wp_updates")
+      .update({ skipped_until: until })
+      .eq("id", id);
+    if (error) {
+      showToast(`Could not skip ${target}. Please try again.`);
+      return;
+    }
+    setLocalUpdates((prev) => prev.filter((item) => item.id !== id));
+    showToast(`${target} skipped for 30 days.`);
+  };
+
+  const handleStage = async (id: string, target: string, siteName: string) => {
+    const { error } = await supabase
+      .from("wp_updates")
+      .update({ staging_status: "queued" })
+      .eq("id", id);
+    if (error) {
+      showToast(`Could not queue staging for ${target}.`);
+      return;
+    }
+    setLocalUpdates((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, stagingStatus: "queued" } : item)),
+    );
+    showToast(`Staging queued for ${target} on ${siteName}. It will run on the next Watchtower cycle.`);
   };
 
   const pendingCount = localUpdates.length;
@@ -285,21 +311,26 @@ export default function WpUpdatesPage() {
                     <Badge tone={flagTone}>{u.flag}</Badge>
                   </div>
                   <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                    <button className="btn ghost sm" onClick={() => showToast(`${u.target} skipped for 30 days.`)} type="button">
+                    <button className="btn ghost sm" onClick={() => handleSkip(u.id, u.target)} type="button">
                       Skip
                     </button>
-                    <button className="btn sm" onClick={() => handleStage(u.target, site?.name ?? "")} type="button">
-                      Stage
+                    <button
+                      className="btn sm"
+                      onClick={() => handleStage(u.id, u.target, site?.name ?? "")}
+                      disabled={u.stagingStatus === "queued"}
+                      type="button"
+                    >
+                      {u.stagingStatus === "queued" ? "Staged ✓" : "Stage"}
                     </button>
                     <button
-                      className={`btn ${u.flag === "Safe update" && isPluginTarget(u.target) ? "primary" : ""} sm`}
-                      disabled={u.flag === "Do not update" || !isPluginTarget(u.target) || updatingId !== null}
-                      style={(u.flag === "Do not update" || !isPluginTarget(u.target) || updatingId !== null) ? { opacity: 0.5, cursor: "not-allowed" } : {}}
-                      title={!isPluginTarget(u.target) ? "Core and theme updates must be applied manually via staging" : undefined}
+                      className={`btn ${u.flag === "Safe update" ? "primary" : ""} sm`}
+                      disabled={u.flag === "Do not update" || updatingId !== null}
+                      style={(u.flag === "Do not update" || updatingId !== null) ? { opacity: 0.5, cursor: "not-allowed" } : {}}
+                      title={u.flag === "Do not update" ? "Flagged do-not-update — review before applying" : undefined}
                       onClick={() => handleUpdate(u.id, u.target, site?.id ?? u.siteId, site?.name ?? "")}
                       type="button"
                     >
-                      {updatingId === u.id ? "Updating…" : isPluginTarget(u.target) ? "Update" : "Manual"}
+                      {updatingId === u.id ? "Updating…" : "Update"}
                     </button>
                   </div>
                 </div>

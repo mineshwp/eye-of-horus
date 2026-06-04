@@ -1,5 +1,7 @@
 export interface WhatsAppResult {
   sent: boolean;
+  /** True when sending was skipped because Twilio isn't configured (not a real send). */
+  skipped?: boolean;
   error?: string;
 }
 
@@ -9,8 +11,10 @@ export async function sendWhatsApp(to: string, body: string): Promise<WhatsAppRe
   const from = process.env.TWILIO_WHATSAPP_FROM;
 
   if (!accountSid || !authToken || !from) {
-    console.log(`[whatsapp] Not configured — would send to ${to}: ${body.slice(0, 80)}…`);
-    return { sent: true };
+    // Do NOT report success — surface the misconfiguration honestly so the
+    // notification log records a 'skipped' entry instead of a fake 'sent'.
+    console.warn(`[whatsapp] Not configured (TWILIO_* missing) — skipping send to ${to}`);
+    return { sent: false, skipped: true, error: 'WhatsApp not configured (TWILIO_* env vars missing)' };
   }
 
   const toNumber = to.startsWith('whatsapp:') ? to : `whatsapp:${to}`;

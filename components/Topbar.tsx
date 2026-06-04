@@ -1,15 +1,51 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useApp } from "@/context/AppContext";
 import { Icon } from "./ui";
 
+interface SearchResult {
+  kind: "site" | "issue" | "wp";
+  id: string;
+  label: string;
+  sub: string;
+  href: string;
+}
+
 export default function Topbar() {
   const pathname = usePathname();
-  const { sites, issues, theme, toggleTheme, runScan, signOut } = useApp();
+  const router = useRouter();
+  const { sites, issues, wpUpdates, theme, toggleTheme, runScan, signOut } = useApp();
   const [showNotifications, setShowNotifications] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
+
+  // ── Global search ──────────────────────────────────────────────────────────
+  const [query, setQuery] = useState("");
+  const [showResults, setShowResults] = useState(false);
+  const searchRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const q = query.trim().toLowerCase();
+  const results: SearchResult[] = q
+    ? [
+        ...sites
+          .filter((s) => s.name.toLowerCase().includes(q) || s.url.toLowerCase().includes(q))
+          .map((s) => ({ kind: "site" as const, id: s.id, label: s.name, sub: s.url, href: `/sites/${s.id}` })),
+        ...issues
+          .filter((i) => i.title.toLowerCase().includes(q) || i.category.toLowerCase().includes(q))
+          .map((i) => ({ kind: "issue" as const, id: i.id, label: i.title, sub: i.category, href: `/issues/${i.id}` })),
+        ...wpUpdates
+          .filter((u) => u.target.toLowerCase().includes(q))
+          .map((u) => ({ kind: "wp" as const, id: u.id, label: u.target, sub: `${u.from ?? ""} → ${u.to ?? ""}`, href: `/wp` })),
+      ].slice(0, 8)
+    : [];
+
+  const goToResult = (r: SearchResult) => {
+    setQuery("");
+    setShowResults(false);
+    router.push(r.href);
+  };
 
   // Close notifications popover on click outside
   useEffect(() => {
@@ -17,9 +53,24 @@ export default function Topbar() {
       if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
         setShowNotifications(false);
       }
+      if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
+        setShowResults(false);
+      }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // ⌘K / Ctrl+K focuses the search input
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
   }, []);
 
   // Compute breadcrumbs dynamically
@@ -74,10 +125,72 @@ export default function Topbar() {
 
       <div className="topbar-spacer" />
 
-      <div className="search">
+      <div className="search" ref={searchRef} style={{ position: "relative" }}>
         <Icon name="search" size={14} />
-        <input placeholder="Search sites, issues, plugins…" />
+        <input
+          ref={searchInputRef}
+          placeholder="Search sites, issues, plugins…"
+          value={query}
+          onChange={(e) => { setQuery(e.target.value); setShowResults(true); }}
+          onFocus={() => setShowResults(true)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && results.length > 0) goToResult(results[0]);
+            if (e.key === "Escape") { setShowResults(false); searchInputRef.current?.blur(); }
+          }}
+        />
         <span className="kbd">⌘K</span>
+
+        {showResults && q && (
+          <div
+            style={{
+              position: "absolute",
+              top: "calc(100% + 8px)",
+              left: 0,
+              right: 0,
+              background: "var(--bg-card)",
+              border: "1px solid var(--border-soft)",
+              borderRadius: 10,
+              boxShadow: "0 12px 40px rgba(0,0,0,0.45)",
+              zIndex: 9999,
+              overflow: "hidden",
+              maxHeight: 360,
+              overflowY: "auto",
+            }}
+          >
+            {results.length === 0 ? (
+              <div style={{ padding: "14px 16px", fontSize: 13, color: "var(--text-tertiary)" }}>
+                No matches for “{query}”
+              </div>
+            ) : (
+              results.map((r) => (
+                <button
+                  key={`${r.kind}-${r.id}`}
+                  onMouseDown={(e) => { e.preventDefault(); goToResult(r); }}
+                  type="button"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    width: "100%",
+                    padding: "10px 16px",
+                    background: "transparent",
+                    border: "none",
+                    borderBottom: "1px solid var(--border-soft)",
+                    cursor: "pointer",
+                    textAlign: "left",
+                    color: "var(--text-primary)",
+                  }}
+                >
+                  <Icon name={r.kind === "site" ? "sites" : r.kind === "issue" ? "issue" : "wp"} size={14} />
+                  <span style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+                    <span style={{ fontSize: 13, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.label}</span>
+                    <span style={{ fontSize: 11.5, color: "var(--text-tertiary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.sub}</span>
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
+        )}
       </div>
 
       <button className="icon-btn" title="Run scan now" onClick={() => runScan()} type="button">

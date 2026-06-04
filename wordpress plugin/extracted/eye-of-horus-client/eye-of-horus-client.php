@@ -3,7 +3,7 @@
  * Plugin Name: Eye of Horus Client
  * Plugin URI: https://wetpaint.co.za/
  * Description: Technical monitoring and reporting agent for the Eye of Horus Dashboard.
- * Version: 2.4.4
+ * Version: 2.5.0
  * Author: Eye of Horus
  * Author URI: https://wetpaint.co.za/
  * Text Domain: eye-of-horus-client
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 
 if (!class_exists('Eye_Of_Horus_Client')) {
     final class Eye_Of_Horus_Client {
-        const VERSION      = '2.4.4';
+        const VERSION      = '2.5.0';
         const OPTION_NAME  = 'eoh_settings';
         const CRON_HOOK    = 'eoh_daily_sync';
         const LAST_SYNC    = 'eoh_last_sync_result';
@@ -637,6 +637,7 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                 'name'             => $theme->get('Name'),
                 'version'          => $theme->get('Version'),
                 'template'         => $theme->get_template(),
+                'stylesheet'       => $theme_slug,
                 'parent_theme'     => $parent_theme,
                 'update_available' => $has_theme_upd,
                 'new_version'      => $has_theme_upd ? ($theme_updates->response[$theme_slug]['new_version'] ?? null) : null,
@@ -1449,6 +1450,16 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                 'callback'            => [$this, 'rest_update_plugin'],
                 'permission_callback' => '__return_true',
             ]);
+            register_rest_route('eye-of-horus/v1', '/update-theme', [
+                'methods'             => 'POST',
+                'callback'            => [$this, 'rest_update_theme'],
+                'permission_callback' => '__return_true',
+            ]);
+            register_rest_route('eye-of-horus/v1', '/update-core', [
+                'methods'             => 'POST',
+                'callback'            => [$this, 'rest_update_core'],
+                'permission_callback' => '__return_true',
+            ]);
             register_rest_route('eye-of-horus/v1', '/sync', [
                 'methods'             => 'POST',
                 'callback'            => [$this, 'rest_trigger_sync'],
@@ -1526,6 +1537,99 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                 'ok'          => true,
                 'message'     => __('Plugin updated successfully.', 'eye-of-horus-client'),
                 'plugin_file' => $plugin_file,
+            ]);
+        }
+
+        public function rest_update_theme($request) {
+            $settings     = get_option(self::OPTION_NAME, []);
+            $stored_key   = isset($settings['site_key']) ? $settings['site_key'] : (isset($settings['api_key']) ? $settings['api_key'] : '');
+            $provided_key = $request->get_header('X-EOH-KEY');
+
+            if (empty($stored_key) || $provided_key !== $stored_key) {
+                return new WP_Error('unauthorized', __('Invalid API key.', 'eye-of-horus-client'), ['status' => 401]);
+            }
+
+            $stylesheet = sanitize_text_field($request->get_param('stylesheet'));
+
+            if (empty($stylesheet)) {
+                return new WP_Error('missing_param', __('stylesheet is required.', 'eye-of-horus-client'), ['status' => 400]);
+            }
+
+            // Basic path traversal guard
+            if (strpos($stylesheet, '..') !== false || strpos($stylesheet, '/') !== false) {
+                return new WP_Error('invalid_param', __('Invalid stylesheet format.', 'eye-of-horus-client'), ['status' => 400]);
+            }
+
+            if (!wp_get_theme($stylesheet)->exists()) {
+                return new WP_Error('not_found', sprintf(__('Theme not found: %s', 'eye-of-horus-client'), $stylesheet), ['status' => 404]);
+            }
+
+            if (!class_exists('Theme_Upgrader')) {
+                require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+            }
+            require_once ABSPATH . 'wp-admin/includes/file.php';
+            require_once ABSPATH . 'wp-admin/includes/misc.php';
+
+            $skin     = new Automatic_Upgrader_Skin();
+            $upgrader = new Theme_Upgrader($skin);
+            $result   = $upgrader->upgrade($stylesheet);
+
+            if (is_wp_error($result)) {
+                return new WP_Error('update_failed', $result->get_error_message(), ['status' => 500]);
+            }
+
+            if ($result === false) {
+                $skin_errors = $skin->get_errors();
+                $msg = is_wp_error($skin_errors) ? $skin_errors->get_error_message() : __('Theme update failed — no result returned.', 'eye-of-horus-client');
+                return new WP_Error('update_failed', $msg, ['status' => 500]);
+            }
+
+            return rest_ensure_response([
+                'ok'         => true,
+                'message'    => __('Theme updated successfully.', 'eye-of-horus-client'),
+                'stylesheet' => $stylesheet,
+            ]);
+        }
+
+        public function rest_update_core($request) {
+            $settings     = get_option(self::OPTION_NAME, []);
+            $stored_key   = isset($settings['site_key']) ? $settings['site_key'] : (isset($settings['api_key']) ? $settings['api_key'] : '');
+            $provided_key = $request->get_header('X-EOH-KEY');
+
+            if (empty($stored_key) || $provided_key !== $stored_key) {
+                return new WP_Error('unauthorized', __('Invalid API key.', 'eye-of-horus-client'), ['status' => 401]);
+            }
+
+            require_once ABSPATH . 'wp-admin/includes/file.php';
+            require_once ABSPATH . 'wp-admin/includes/misc.php';
+            require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+            require_once ABSPATH . 'wp-admin/includes/update.php';
+
+            wp_version_check();
+            $updates = get_core_updates();
+
+            if (empty($updates) || !is_array($updates) || 'upgrade' !== $updates[0]->response) {
+                return new WP_Error('no_update', __('No core update available.', 'eye-of-horus-client'), ['status' => 400]);
+            }
+
+            $skin     = new Automatic_Upgrader_Skin();
+            $upgrader = new Core_Upgrader($skin);
+            $result   = $upgrader->upgrade($updates[0]);
+
+            if (is_wp_error($result)) {
+                return new WP_Error('update_failed', $result->get_error_message(), ['status' => 500]);
+            }
+
+            if ($result === false) {
+                $skin_errors = $skin->get_errors();
+                $msg = is_wp_error($skin_errors) ? $skin_errors->get_error_message() : __('Core update failed — no result returned.', 'eye-of-horus-client');
+                return new WP_Error('update_failed', $msg, ['status' => 500]);
+            }
+
+            return rest_ensure_response([
+                'ok'      => true,
+                'message' => __('WordPress core updated successfully.', 'eye-of-horus-client'),
+                'version' => isset($updates[0]->version) ? $updates[0]->version : null,
             ]);
         }
     }
