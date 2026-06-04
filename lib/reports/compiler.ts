@@ -60,13 +60,29 @@ export async function compileReport(
     .gte('checked_at', prevStart.toISOString())
     .lte('checked_at', periodStart.toISOString());
 
-  // Latest WordPress snapshot
-  const { data: wpSnapshots } = await supabase
+  // WordPress snapshot AS AT the end of the reported month — reports are
+  // historical snapshots of the previous completed month, never live data
+  // (CLAUDE.md rule #1). Using the month-end snapshot also captures Wordfence
+  // attack counts while they're still fresh in wfHits (Wordfence prunes that
+  // log over time), so the report's "last month" figures stay accurate forever.
+  const snapshotCols = 'wp_version, php_version, server_data, security_data, plugin_data, form_data, wordfence_data, created_at';
+  let { data: wpSnapshots } = await supabase
     .from('wordpress_snapshots')
-    .select('wp_version, php_version, server_data, security_data, plugin_data, form_data, wordfence_data, created_at')
+    .select(snapshotCols)
     .eq('site_id', siteId)
+    .lte('created_at', endIso)
     .order('created_at', { ascending: false })
     .limit(1);
+  // Fallback: if there's no snapshot at/before the period end (e.g. the plugin
+  // was connected only after the period), use the earliest available one.
+  if (!wpSnapshots || wpSnapshots.length === 0) {
+    ({ data: wpSnapshots } = await supabase
+      .from('wordpress_snapshots')
+      .select(snapshotCols)
+      .eq('site_id', siteId)
+      .order('created_at', { ascending: true })
+      .limit(1));
+  }
 
   // Playwright checks current period
   const { data: playwrightChecks } = await supabase
