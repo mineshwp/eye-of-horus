@@ -22,8 +22,10 @@ export interface PageSpeedResult {
   lcp: number | null;
   /** Cumulative Layout Shift — raw score (0–1+) */
   cls: number | null;
-  /** Interaction to Next Paint — milliseconds */
+  /** Interaction to Next Paint — milliseconds (field/CrUX only; lab cannot measure it) */
   inp: number | null;
+  /** Total Blocking Time — milliseconds (the lab interactivity proxy for INP) */
+  tbt: number | null;
   /** First Contentful Paint — seconds */
   fcp: number | null;
   /** Time to Interactive — seconds */
@@ -108,6 +110,9 @@ export async function fetchPageSpeedInsights(
       ? Math.round((audits["cumulative-layout-shift"].numericValue!) * 1000) / 1000
       : null,
     inp: audits["interaction-to-next-paint"]?.numericValue ?? fieldMetric(data, "INTERACTION_TO_NEXT_PAINT_MS"),
+    tbt: audits["total-blocking-time"]?.numericValue != null
+      ? Math.round(audits["total-blocking-time"].numericValue!)
+      : null,
     fcp: msToSec(audits["first-contentful-paint"]?.numericValue),
     tti: msToSec(audits["interactive"]?.numericValue),
     raw_result: data,

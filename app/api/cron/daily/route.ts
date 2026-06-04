@@ -248,10 +248,10 @@ export async function POST(request: NextRequest) {
 
             const rows = [];
             if (desktop) {
-              rows.push({ site_id: site.id, device: "desktop", performance_score: desktop.performance_score, accessibility_score: desktop.accessibility_score, seo_score: desktop.seo_score, best_practices_score: desktop.best_practices_score, lcp: desktop.lcp, cls: desktop.cls, inp: desktop.inp, fcp: desktop.fcp, tti: desktop.tti, raw_result: desktop.raw_result });
-              rows.push({ site_id: site.id, device: "tablet", performance_score: desktop.performance_score, accessibility_score: desktop.accessibility_score, seo_score: desktop.seo_score, best_practices_score: desktop.best_practices_score, lcp: desktop.lcp, cls: desktop.cls, inp: desktop.inp, fcp: desktop.fcp, tti: desktop.tti, raw_result: desktop.raw_result });
+              rows.push({ site_id: site.id, device: "desktop", performance_score: desktop.performance_score, accessibility_score: desktop.accessibility_score, seo_score: desktop.seo_score, best_practices_score: desktop.best_practices_score, lcp: desktop.lcp, cls: desktop.cls, inp: desktop.inp, tbt: desktop.tbt, fcp: desktop.fcp, tti: desktop.tti, raw_result: desktop.raw_result });
+              rows.push({ site_id: site.id, device: "tablet", performance_score: desktop.performance_score, accessibility_score: desktop.accessibility_score, seo_score: desktop.seo_score, best_practices_score: desktop.best_practices_score, lcp: desktop.lcp, cls: desktop.cls, inp: desktop.inp, tbt: desktop.tbt, fcp: desktop.fcp, tti: desktop.tti, raw_result: desktop.raw_result });
             }
-            if (mobile) rows.push({ site_id: site.id, device: "mobile", performance_score: mobile.performance_score, accessibility_score: mobile.accessibility_score, seo_score: mobile.seo_score, best_practices_score: mobile.best_practices_score, lcp: mobile.lcp, cls: mobile.cls, inp: mobile.inp, fcp: mobile.fcp, tti: mobile.tti, raw_result: mobile.raw_result });
+            if (mobile) rows.push({ site_id: site.id, device: "mobile", performance_score: mobile.performance_score, accessibility_score: mobile.accessibility_score, seo_score: mobile.seo_score, best_practices_score: mobile.best_practices_score, lcp: mobile.lcp, cls: mobile.cls, inp: mobile.inp, tbt: mobile.tbt, fcp: mobile.fcp, tti: mobile.tti, raw_result: mobile.raw_result });
 
             if (rows.length > 0) {
               await supabase.from("performance_metrics").insert(rows);

@@ -108,10 +108,12 @@
     vitals.push({ metric: metric, value: v, rating: rate(metric, v), path: path() });
   }
 
-  function observe(type, cb) {
+  function observe(type, cb, extra) {
     try {
       var po = new PerformanceObserver(function (list) { cb(list.getEntries(), po); });
-      po.observe({ type: type, buffered: true });
+      var opts = { type: type, buffered: true };
+      if (extra) { for (var k in extra) { if (extra.hasOwnProperty(k)) opts[k] = extra[k]; } }
+      po.observe(opts);
       return po;
     } catch (e) { return null; }
   }
@@ -145,12 +147,17 @@
   });
 
   // INP — approximate as the worst interaction event duration.
+  // durationThreshold:40 lowers the default 104ms cap so normal (fast)
+  // interactions are still captured; first-input guarantees the first
+  // interaction is observed even if it predates the event observer.
   var inpValue = 0;
-  observe("event", function (entries) {
+  function trackInteraction(entries) {
     for (var i = 0; i < entries.length; i++) {
       if (entries[i].duration > inpValue) inpValue = entries[i].duration;
     }
-  });
+  }
+  observe("event", trackInteraction, { durationThreshold: 40 });
+  observe("first-input", trackInteraction);
 
   // ── Interaction tracking ─────────────────────────────────────────────────
   var DOWNLOAD_RE = /\.(pdf|zip|docx?|xlsx?|pptx?|csv|dmg|exe|pkg|mp4|mp3|wav|rar|gz|tar)(\?|$)/i;

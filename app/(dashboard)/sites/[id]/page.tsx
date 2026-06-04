@@ -164,6 +164,7 @@ interface PerfMetricRow {
   lcp: number | null;
   cls: number | null;
   inp: number | null;
+  tbt: number | null;
   fcp: number | null;
   tti: number | null;
   created_at: string;
@@ -4847,10 +4848,13 @@ const PerformanceTab = ({
     return "var(--red)";
   };
 
+  // Lab (Lighthouse) vitals. Note: INP is NOT shown here — it cannot be
+  // measured in lab mode (field-only metric). TBT is the lab interactivity
+  // proxy; real-user INP lives in the Core Web Vitals card above.
   const vitals = (m: PerfMetricRow | undefined) => [
     { label: "LCP", val: m?.lcp, unit: "s", good: 2.5, poor: 4 },
     { label: "CLS", val: m?.cls, unit: "", good: 0.1, poor: 0.25 },
-    { label: "INP", val: m?.inp, unit: "ms", good: 200, poor: 500 },
+    { label: "TBT", val: m?.tbt, unit: "ms", good: 200, poor: 600 },
     { label: "FCP", val: m?.fcp, unit: "s", good: 1.8, poor: 3 },
     { label: "TTI", val: m?.tti, unit: "s", good: 3.8, poor: 7.3 },
   ];

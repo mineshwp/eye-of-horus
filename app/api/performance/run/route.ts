@@ -35,6 +35,7 @@ function buildRow(siteId: string, device: "desktop" | "mobile" | "tablet", resul
     lcp: result.lcp,
     cls: result.cls,
     inp: result.inp,
+    tbt: result.tbt,
     fcp: result.fcp,
     tti: result.tti,
     raw_result: result.raw_result,
