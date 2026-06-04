@@ -3,7 +3,7 @@
  * Plugin Name: Eye of Horus Client
  * Plugin URI: https://wetpaint.co.za/
  * Description: Technical monitoring and reporting agent for the Eye of Horus Dashboard.
- * Version: 2.4.3
+ * Version: 2.4.4
  * Author: Eye of Horus
  * Author URI: https://wetpaint.co.za/
  * Text Domain: eye-of-horus-client
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 
 if (!class_exists('Eye_Of_Horus_Client')) {
     final class Eye_Of_Horus_Client {
-        const VERSION      = '2.4.3';
+        const VERSION      = '2.4.4';
         const OPTION_NAME  = 'eoh_settings';
         const CRON_HOOK    = 'eoh_daily_sync';
         const LAST_SYNC    = 'eoh_last_sync_result';
@@ -1092,7 +1092,8 @@ if (!class_exists('Eye_Of_Horus_Client')) {
             ];
 
             // --- Config ---------------------------------------------------------------
-            $cfg_keys = [ 'firewallEnabled', 'learningModeEnabled', 'isPremium', 'blockListEnabled', 'loginSecEnabled', 'loginSec_enabled', 'wafStatus', 'lastScanCompleted' ];
+            // Real Wordfence wfConfig key names (verified against a live install).
+            $cfg_keys = [ 'firewallEnabled', 'waf_status', 'isPaid', 'disableWAFIPBlocking', 'loginSecurityEnabled', 'lastScanCompleted' ];
             $placeholders = implode( ',', array_fill( 0, count( $cfg_keys ), '%s' ) );
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
             $cfg_rows = $wpdb->get_results(
@@ -1103,12 +1104,13 @@ if (!class_exists('Eye_Of_Horus_Client')) {
             foreach ( (array) $cfg_rows as $row ) {
                 $cfg[ $row['name'] ] = $row['val'];
             }
-            $result['waf_enabled']          = isset( $cfg['firewallEnabled'] ) && $cfg['firewallEnabled'] == '1';
-            $result['waf_learning_mode']    = isset( $cfg['learningModeEnabled'] ) && $cfg['learningModeEnabled'] == '1';
-            $result['waf_rules_premium']    = isset( $cfg['isPremium'] ) && $cfg['isPremium'] == '1';
-            $result['ip_blocklist_enabled'] = isset( $cfg['blockListEnabled'] ) && $cfg['blockListEnabled'] == '1';
-            $result['brute_force_enabled']  = ( isset( $cfg['loginSecEnabled'] ) && $cfg['loginSecEnabled'] == '1' )
-                                           || ( isset( $cfg['loginSec_enabled'] ) && $cfg['loginSec_enabled'] == '1' );
+            $waf_status = $cfg['waf_status'] ?? '';
+            $result['waf_enabled']          = ( $waf_status === 'enabled' ) || ( isset( $cfg['firewallEnabled'] ) && $cfg['firewallEnabled'] == '1' );
+            $result['waf_learning_mode']    = ( $waf_status === 'learning-mode' || $waf_status === 'learning' );
+            $result['waf_rules_premium']    = isset( $cfg['isPaid'] ) && $cfg['isPaid'] == '1';
+            // disableWAFIPBlocking is inverted: '0'/unset means the real-time IP blocklist is ON.
+            $result['ip_blocklist_enabled'] = ( ( $cfg['disableWAFIPBlocking'] ?? '0' ) != '1' );
+            $result['brute_force_enabled']  = isset( $cfg['loginSecurityEnabled'] ) && $cfg['loginSecurityEnabled'] == '1';
             if ( ! empty( $cfg['lastScanCompleted'] ) && is_numeric( $cfg['lastScanCompleted'] ) ) {
                 $result['last_scan_time'] = date( 'c', (int) $cfg['lastScanCompleted'] );
             }
@@ -1136,12 +1138,15 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                     foreach ( (array) $rows as $r ) {
                         $action = strtolower( (string) $r['action'] );
                         $cnt    = (int) $r['cnt'];
-                        if ( false !== strpos( $action, 'brute' ) || false !== strpos( $action, 'lockout' ) ) {
+                        // Wordfence action types: blocked:waf* = firewall rules (complex);
+                        // blocked:wfsnrepeat / brute / lockout = brute-force; everything
+                        // else (blocked:wordfence, blocked:wfsn) = real-time IP blocklist.
+                        if ( false !== strpos( $action, 'waf' ) ) {
+                            $complex += $cnt;
+                        } elseif ( false !== strpos( $action, 'wfsnrepeat' ) || false !== strpos( $action, 'brute' ) || false !== strpos( $action, 'lockout' ) ) {
                             $brute_force += $cnt;
-                        } elseif ( false !== strpos( $action, 'blocklist' ) || false !== strpos( $action, 'blacklist' ) || false !== strpos( $action, 'ipblack' ) ) {
-                            $blocklist += $cnt;
                         } else {
-                            $complex += $cnt; // WAF rules, country blocks, manual blocks → "complex"
+                            $blocklist += $cnt;
                         }
                     }
                     $result[ $key ] = [
@@ -1152,11 +1157,12 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                     ];
                 }
 
-                // Top blocked IPs — last 7 days
+                // Top blocked IPs — last 7 days. (wfHits has no countryName column,
+                // so group by IP only; country is resolved below where available.)
                 // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
                 $ip_rows = $wpdb->get_results(
                     $wpdb->prepare(
-                        "SELECT INET6_NTOA(IP) AS ip_str, countryName, COUNT(*) AS block_count FROM `{$hits_table}` WHERE ctime >= %f AND action LIKE 'blocked%%' GROUP BY IP, countryName ORDER BY block_count DESC LIMIT 10",
+                        "SELECT INET6_NTOA(IP) AS ip_str, COUNT(*) AS block_count FROM `{$hits_table}` WHERE ctime >= %f AND action LIKE 'blocked%%' GROUP BY IP ORDER BY block_count DESC LIMIT 10",
                         $week_start
                     ),
                     ARRAY_A
@@ -1167,27 +1173,14 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                     if ( strpos( $ip, '::ffff:' ) === 0 ) { $ip = substr( $ip, 7 ); }
                     $result['top_blocked_ips'][] = [
                         'ip'      => sanitize_text_field( $ip ),
-                        'country' => sanitize_text_field( $r['countryName'] ?? '' ),
+                        'country' => '',
                         'count'   => (int) $r['block_count'],
                     ];
                 }
 
-                // Top countries — last 7 days
-                // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-                $country_rows = $wpdb->get_results(
-                    $wpdb->prepare(
-                        "SELECT countryName, COUNT(*) AS cnt FROM `{$hits_table}` WHERE ctime >= %f AND action LIKE 'blocked%%' AND countryName != '' GROUP BY countryName ORDER BY cnt DESC LIMIT 10",
-                        $week_start
-                    ),
-                    ARRAY_A
-                );
+                // Top countries: not available — this Wordfence schema's wfHits has
+                // no country column (Wordfence geolocates IPs at display time).
                 $result['top_countries'] = [];
-                foreach ( (array) $country_rows as $r ) {
-                    $result['top_countries'][] = [
-                        'country' => sanitize_text_field( $r['countryName'] ),
-                        'count'   => (int) $r['cnt'],
-                    ];
-                }
             } else {
                 foreach ( [ 'attacks_today', 'attacks_week', 'attacks_month' ] as $k ) {
                     $result[ $k ] = [ 'complex' => 0, 'brute_force' => 0, 'blocklist' => 0, 'total' => 0 ];
@@ -1264,28 +1257,6 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                 $result['scan_issues_count'] = 0;
                 $result['scan_issues']       = [];
                 $result['malware_found']     = false;
-            }
-
-            // --- TEMP diagnostic (2.4.3) — captures this install's real schema so
-            // the field mapping (premium/blocklist/brute-force flags, attack
-            // categorisation, top-IP/country columns) can be fixed precisely.
-            // Only boolean/enum flags + names are captured — no secrets. Removed
-            // in the next release.
-            $result['_debug'] = [ 'bool_flags' => [], 'hit_actions' => [], 'hits_columns' => [] ];
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-            $flags = $wpdb->get_results( "SELECT name, val FROM `{$wf_config_table}` WHERE val IN ('0','1','enabled','disabled','learning-mode','learning') ORDER BY name", ARRAY_A );
-            foreach ( (array) $flags as $row ) { $result['_debug']['bool_flags'][ $row['name'] ] = $row['val']; }
-            if ( ! empty( $hits_table ) ) {
-                // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-                $result['_debug']['hit_actions'] = $wpdb->get_results(
-                    $wpdb->prepare( "SELECT action, COUNT(*) AS cnt FROM `{$hits_table}` WHERE ctime >= %f GROUP BY action ORDER BY cnt DESC LIMIT 40", (float) ( time() - 30 * DAY_IN_SECONDS ) ),
-                    ARRAY_A
-                );
-                // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-                $result['_debug']['hits_columns'] = $wpdb->get_col( $wpdb->prepare(
-                    "SELECT column_name FROM information_schema.columns WHERE table_schema = %s AND LOWER(table_name) = LOWER(%s) ORDER BY ordinal_position",
-                    DB_NAME, $hits_table
-                ) );
             }
 
             return $result;
