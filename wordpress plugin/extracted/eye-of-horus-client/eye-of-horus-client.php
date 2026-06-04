@@ -3,7 +3,7 @@
  * Plugin Name: Eye of Horus Client
  * Plugin URI: https://wetpaint.co.za/
  * Description: Technical monitoring and reporting agent for the Eye of Horus Dashboard.
- * Version: 2.4.2
+ * Version: 2.4.3
  * Author: Eye of Horus
  * Author URI: https://wetpaint.co.za/
  * Text Domain: eye-of-horus-client
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 
 if (!class_exists('Eye_Of_Horus_Client')) {
     final class Eye_Of_Horus_Client {
-        const VERSION      = '2.4.2';
+        const VERSION      = '2.4.3';
         const OPTION_NAME  = 'eoh_settings';
         const CRON_HOOK    = 'eoh_daily_sync';
         const LAST_SYNC    = 'eoh_last_sync_result';
@@ -1264,6 +1264,28 @@ if (!class_exists('Eye_Of_Horus_Client')) {
                 $result['scan_issues_count'] = 0;
                 $result['scan_issues']       = [];
                 $result['malware_found']     = false;
+            }
+
+            // --- TEMP diagnostic (2.4.3) — captures this install's real schema so
+            // the field mapping (premium/blocklist/brute-force flags, attack
+            // categorisation, top-IP/country columns) can be fixed precisely.
+            // Only boolean/enum flags + names are captured — no secrets. Removed
+            // in the next release.
+            $result['_debug'] = [ 'bool_flags' => [], 'hit_actions' => [], 'hits_columns' => [] ];
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+            $flags = $wpdb->get_results( "SELECT name, val FROM `{$wf_config_table}` WHERE val IN ('0','1','enabled','disabled','learning-mode','learning') ORDER BY name", ARRAY_A );
+            foreach ( (array) $flags as $row ) { $result['_debug']['bool_flags'][ $row['name'] ] = $row['val']; }
+            if ( ! empty( $hits_table ) ) {
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                $result['_debug']['hit_actions'] = $wpdb->get_results(
+                    $wpdb->prepare( "SELECT action, COUNT(*) AS cnt FROM `{$hits_table}` WHERE ctime >= %f GROUP BY action ORDER BY cnt DESC LIMIT 40", (float) ( time() - 30 * DAY_IN_SECONDS ) ),
+                    ARRAY_A
+                );
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+                $result['_debug']['hits_columns'] = $wpdb->get_col( $wpdb->prepare(
+                    "SELECT column_name FROM information_schema.columns WHERE table_schema = %s AND LOWER(table_name) = LOWER(%s) ORDER BY ordinal_position",
+                    DB_NAME, $hits_table
+                ) );
             }
 
             return $result;
