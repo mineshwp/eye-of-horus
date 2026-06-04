@@ -3,7 +3,7 @@
  * Plugin Name: Eye of Horus Client
  * Plugin URI: https://wetpaint.co.za/
  * Description: Technical monitoring and reporting agent for the Eye of Horus Dashboard.
- * Version: 2.4.1
+ * Version: 2.4.2
  * Author: Eye of Horus
  * Author URI: https://wetpaint.co.za/
  * Text Domain: eye-of-horus-client
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 
 if (!class_exists('Eye_Of_Horus_Client')) {
     final class Eye_Of_Horus_Client {
-        const VERSION      = '2.4.1';
+        const VERSION      = '2.4.2';
         const OPTION_NAME  = 'eoh_settings';
         const CRON_HOOK    = 'eoh_daily_sync';
         const LAST_SYNC    = 'eoh_last_sync_result';
@@ -1058,16 +1058,26 @@ if (!class_exists('Eye_Of_Horus_Client')) {
             update_option($key, $count + 1, false);
         }
 
+        // Resolve a Wordfence table's real name case-insensitively. Wordfence
+        // uses lowercase table names (wp_wfconfig, wp_wfhits, …); a camelCase
+        // `SHOW TABLES LIKE` never matches on case-sensitive MySQL hosts, which
+        // made Wordfence look "not installed". Returns the actual name, or null.
+        private function wf_table( $suffix ) {
+            global $wpdb;
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+            $actual = $wpdb->get_var( $wpdb->prepare(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = %s AND LOWER(table_name) = LOWER(%s) LIMIT 1",
+                DB_NAME,
+                $wpdb->prefix . $suffix
+            ) );
+            return $actual ? $actual : null;
+        }
+
         private function collect_wordfence_data() {
             global $wpdb;
 
-            $wf_config_table = $wpdb->prefix . 'wfConfig';
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-            $table_check = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $wf_config_table ) ) );
-            // Use a presence check, not a strict ===: hosts with MySQL
-            // lower_case_table_names=1 return the name lowercased (wp_wfconfig),
-            // which a case-sensitive compare would wrongly treat as "not installed".
-            if ( empty( $table_check ) ) {
+            $wf_config_table = $this->wf_table( 'wfConfig' );
+            if ( empty( $wf_config_table ) ) {
                 return null; // Wordfence not installed
             }
 
@@ -1104,11 +1114,9 @@ if (!class_exists('Eye_Of_Horus_Client')) {
             }
 
             // --- Attack summary from wfHits -------------------------------------------
-            $hits_table  = $wpdb->prefix . 'wfHits';
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-            $hits_exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $hits_table ) );
+            $hits_table = $this->wf_table( 'wfHits' );
 
-            if ( $hits_exists === $hits_table ) {
+            if ( $hits_table ) {
                 $now        = time();
                 $today_start = (float) strtotime( 'today midnight' );
                 $week_start  = (float) ( $now - 7 * DAY_IN_SECONDS );
@@ -1189,11 +1197,9 @@ if (!class_exists('Eye_Of_Horus_Client')) {
             }
 
             // --- Login attempts from wfLogins -----------------------------------------
-            $logins_table  = $wpdb->prefix . 'wfLogins';
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-            $logins_exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $logins_table ) );
+            $logins_table = $this->wf_table( 'wfLogins' );
 
-            if ( $logins_exists === $logins_table ) {
+            if ( $logins_table ) {
                 // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
                 $failed = $wpdb->get_results(
                     "SELECT username, INET6_NTOA(IP) AS ip_str, ctime FROM `{$logins_table}` WHERE fail = 1 ORDER BY ctime DESC LIMIT 20",
@@ -1231,11 +1237,9 @@ if (!class_exists('Eye_Of_Horus_Client')) {
             }
 
             // --- Scan issues from wfIssues --------------------------------------------
-            $issues_table  = $wpdb->prefix . 'wfIssues';
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-            $issues_exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $issues_table ) );
+            $issues_table = $this->wf_table( 'wfIssues' );
 
-            if ( $issues_exists === $issues_table ) {
+            if ( $issues_table ) {
                 // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
                 $scan_issues = $wpdb->get_results(
                     "SELECT type, severity, shortMsg FROM `{$issues_table}` WHERE status = 'new' ORDER BY FIELD(severity,'critical','warning','low') LIMIT 20",
