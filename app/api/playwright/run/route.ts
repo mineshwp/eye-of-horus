@@ -32,9 +32,11 @@ export async function POST(request: NextRequest) {
   }
 
   let testForms = false;
+  let siteId = "";
   try {
     const body = await request.json();
     testForms = body?.testForms === true;
+    siteId = typeof body?.siteId === "string" ? body.siteId : "";
   } catch {
     /* no body is fine */
   }
@@ -49,7 +51,10 @@ export async function POST(request: NextRequest) {
         "X-GitHub-Api-Version": "2022-11-28",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ ref, inputs: { test_forms: String(testForms) } }),
+      body: JSON.stringify({
+        ref,
+        inputs: { test_forms: String(testForms), site_id: siteId },
+      }),
     });
 
     if (res.status === 204) {

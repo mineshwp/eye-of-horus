@@ -1,546 +1,250 @@
-# CLAUDE.md
+# CLAUDE.md — Eye of Horus 2.0
 
-# EYE OF HORUS
-AI Website Monitoring, QA, Reporting & Client Intelligence Platform
-
----
-
-# PROJECT OVERVIEW
-
-Eye of Horus is an AI-powered website monitoring and reporting platform built for Wetpaint.
-
-The system monitors client websites, tracks issues, runs automated visual and form testing, analyses analytics and UX data, monitors WordPress security and updates, and generates monthly AI-assisted reports for clients.
-
-The platform combines:
-
-- Technical monitoring
-- WordPress intelligence
-- UX monitoring
-- AI-generated reporting
-- Visual regression testing
-- Security monitoring
-- Client portals
-- Automated QA workflows
-
-The platform must feel premium, futuristic, intelligent and operationally efficient.
+AI Website Monitoring, QA, Reporting & Client Intelligence Platform built for Wetpaint.
 
 ---
 
-# CORE STACK
+## MANDATORY WORKFLOW
 
-Frontend:
-- Next.js
-- TypeScript
-- Tailwind
-- shadcn/ui
-
-Backend:
-- Supabase
-- PostgreSQL
-- Supabase Storage
-- Supabase Auth
-
-Automation:
-- GitHub Actions
-- Playwright
-
-AI:
-- OpenAI API
-
-Email:
-- Resend
-
-WordPress Integration:
-- Custom Eye of Horus WordPress plugin
+1. Read **this file** first.
+2. Read `Eye of Horus 2.0/progress.md` second — continue from the latest unfinished task.
+3. Update `progress.md` after every session. Append only — never delete history.
+4. Run `npx tsc --noEmit` before finishing any session. Fix all errors before stopping.
+5. Run `npm run build` before declaring any feature complete.
 
 ---
 
-# PRIMARY OBJECTIVE
+## REPOSITORY LAYOUT
 
-Create a centralised system where Wetpaint can:
+```
+eye-of-horus-2point0/              ← root (you are here)
+├── Eye of Horus 2.0/              ← Next.js app — ALL work goes here
+│   ├── app/                       ← App Router pages + API routes
+│   ├── components/                ← Shared UI (Sidebar, Topbar, SignIn, ui.tsx)
+│   ├── context/AppContext.tsx     ← Global state, auth, Supabase data
+│   ├── lib/                       ← Business logic (checks, analytics, AI, reports)
+│   ├── playwright/                ← Playwright runner (excluded from Next.js build)
+│   ├── supabase/migrations/       ← All DB migrations (apply in filename order)
+│   ├── docs/                      ← Architecture and spec docs
+│   ├── progress.md                ← Session history (append-only)
+│   └── CLAUDE.md                  ← App-level detail (read alongside this file)
+└── CLAUDE.md                      ← This file
+```
 
-- Monitor all client websites
-- Detect technical issues
-- Detect WordPress update issues
-- Monitor forms
-- Monitor UX behaviour
-- Run automated Playwright checks
-- Generate monthly reports
-- Give clients portal access to approved reports
-
-The system should reduce manual QA and reporting work while improving oversight and proactive support.
-
----
-
-# IMPORTANT PROJECT RULES
-
-## 1. REPORTS ARE SNAPSHOTS
-
-Reports must NEVER show live data.
-
-Reports always represent the previous completed month.
-
-Example:
-- Current date: May 2026
-- Report shown to client: April 2026
-
-Reports are historical snapshots.
+**Always work inside `Eye of Horus 2.0/`.** The root-level `components/` and `context/` folders are legacy — do not touch them.
 
 ---
 
-## 2. CLIENTS ARE READ-ONLY
+## TECH STACK
 
-Clients can:
-- View reports
-- Print reports
-- Download PDFs
-- View historical reports
-
-Clients cannot:
-- Edit reports
-- View live data
-- Trigger scans
-- Update plugins
-- Access admin tools
-
----
-
-## 3. WETPAINT ADMINS CONTROL EVERYTHING
-
-Wetpaint Admins and Super Admins can:
-- Edit reports
-- Approve reports
-- Trigger scans
-- Update WordPress plugins
-- Configure Playwright tests
-- Invite clients
-- Manage client access
+| Layer | Technology |
+|---|---|
+| Framework | Next.js 16 (App Router), TypeScript, React 19 |
+| Styling | Tailwind CSS v4, custom primitives in `components/ui.tsx` |
+| Database | Supabase (PostgreSQL) with RLS on every table |
+| Auth | Supabase Auth — `persistSession: true`, `autoRefreshToken: true` |
+| Storage | Supabase Storage — private bucket `watchtower-artifacts` |
+| AI | Anthropic SDK (`@anthropic-ai/sdk`) — Haiku for speed, Sonnet for depth |
+| Email | Resend via `lib/reports/email-template.ts` |
+| Analytics | Google Analytics 4, Google Search Console, Microsoft Clarity |
+| QA | Playwright + pixelmatch (visual regression) |
+| Deployment | Vercel — mineshwp account — auto-deploys from GitHub |
+| WordPress | Custom plugin `eye-of-horus-client.php` — sends data via REST API |
 
 ---
 
-## 4. WORDPRESS UPDATES MUST BECOME ISSUES
+## CURRENT STATE
 
-Any detected WordPress update:
-- Plugin
-- Theme
-- Core update
+**Platform is live** at `https://eye-of-horus-2point0-alpha.vercel.app`.
 
-must create an issue in:
-- Dashboard Open Issues
-- Issues tab
-- WordPress tab
+All DB migrations are applied. No demo/seed data remains. The app is fully database-driven.
+
+**Active goal: cleanup and hardening.** Every feature must work end-to-end — UI → API → DB → response. No stubs, no silent failures, no TODO comments left in user-facing code.
 
 ---
 
-## 5. PLAYWRIGHT RUNS PER CLIENT
+## CLEANUP RULES (enforced from this session forward)
 
-Playwright checks are NOT global.
-
-Each client website:
-- Has its own tests
-- Has its own screenshots
-- Has its own logs
-- Has its own history
-- Has its own Watchtower Checks tab
-
----
-
-# UI SECTIONS
-
-## Dashboard
-Overview of:
-- Open issues
-- Security warnings
-- WordPress updates
-- Form failures
-- Watchtower failures
-- Analytics summary
-- UX alerts
+1. **Every UI element must connect to real data.** Wire it to the DB or remove it.
+2. **Every button must do something.** Implement the handler or hide the button.
+3. **Every API route must be auth-guarded.** Use `getApiUser()` from `lib/auth/index.ts`. Cron routes use `CRON_SECRET` bearer token.
+4. **Every error must be surfaced.** No empty `catch {}`. No silent failures. Show a toast or inline error.
+5. **No TypeScript `any`.** Replace with proper types. Verify with `npx tsc --noEmit`.
+6. **No `console.log` in production paths.** Use `console.error` for genuine errors only.
+7. **No hardcoded IDs, names, or URLs.** Everything from DB or env vars.
+8. **RLS on every table.** Server-side API routes use the service role key to bypass RLS intentionally.
 
 ---
 
-## Analytics
-Contains:
-- Google Analytics data
-- Traffic data
-- User journeys
-- Microsoft Clarity UX Signals
-- Heatmaps
-- Scroll depth
-- Rage clicks
-- Dead clicks
-- Engagement insights
+## ROLES & PERMISSIONS
 
-Microsoft Clarity MUST live under Analytics.
+| Role | Access |
+|---|---|
+| `super_admin` | Full access to everything |
+| `admin` | Full access except super-admin settings |
+| `client` | Read-only: approved reports for their company only |
+
+RLS enforces tenant isolation. The `get_my_role()` SECURITY DEFINER function avoids recursion in policies.
 
 ---
 
-## WordPress
-Contains:
-- Plugin updates
-- Theme updates
-- Core updates
-- Installed plugins
-- Version comparisons
-- Update buttons
-- WordPress health
+## DATABASE
 
-Admins can manually update plugins from this screen.
+**Client-side:** `lib/supabase.ts` — anon key, respects RLS.
+**Server-side (API routes):** create a service-role client to bypass RLS.
 
----
+### All confirmed production tables
+`sites`, `issues`, `wp_updates`, `activities`, `profiles`, `clients`, `client_users`, `access_requests`, `uptime_checks`, `checks`, `performance_metrics`, `wordpress_snapshots`, `playwright_checks`, `playwright_baselines`, `form_checks`, `reports`, `report_schedules`, `analytics_snapshots`, `search_console_snapshots`, `clarity_snapshots`, `site_integrations`, `ai_messages`, `notification_logs`, `alert_settings`, `domain_checks`, `global_settings`, `seo_crawls`, `a11y_audits`, `rum_events`, `rum_sessions`, `button_actions`, `business_inputs`
 
-## Security
-Security data comes from Wordfence through the custom WordPress plugin.
-
-Display:
-- Firewall status
-- Scan status
-- Malware alerts
-- Attack attempts
-- Vulnerabilities
-- Security warnings
+### Adding a migration
+1. Create: `supabase/migrations/YYYYMMDDHHMMSS_description.sql`
+2. Write idempotent SQL (`IF NOT EXISTS`, `ON CONFLICT DO NOTHING`)
+3. Apply via Supabase SQL Editor or `supabase db push`
+4. Record in `progress.md`
 
 ---
 
-## Forms
-WPForms integration only for initial release.
+## REPORT RULES (non-negotiable)
 
-Display:
-- Total submissions
-- Abandonment data
-- Form conversion data
-- Field-level analytics
-- Multiple-choice statistics
-
-Example:
-
-Province:
-- Gauteng — 22
-- Western Cape — 14
+- Reports are **monthly snapshots of the previous month**. Never live data.
+- Status flow: `draft` → `pending_approval` → `approved` (or `rejected` back to `draft`)
+- Clients only ever see `approved` reports.
+- Share tokens are permanent — approved reports always accessible at `/report/[token]`.
 
 ---
 
-## Watchtower Checks
-Previously called History.
+## KEY FILES
 
-This section contains:
-- Playwright results
-- Visual regression history
-- Form testing results
-- Screenshot comparisons
-- Logs
-- Failed checks
-- Historical runs
-
----
-
-# WORDPRESS PLUGIN REQUIREMENTS
-
-The custom WordPress plugin acts as the bridge between WordPress and Eye of Horus.
-
-The plugin must:
-- Authenticate securely
-- Send site data to the app
-- Fetch WordPress updates
-- Read Wordfence data
-- Read WPForms data
-- Trigger plugin updates securely
-- Return site health data
-
-The plugin should expose secure REST API endpoints.
-
-Never expose sensitive WordPress credentials publicly.
+| File | Purpose |
+|---|---|
+| `app/(dashboard)/sites/[id]/page.tsx` | Main site detail page — all tabs |
+| `context/AppContext.tsx` | Global state: auth, sites, issues, `runScan()`, `apiFetch()` |
+| `lib/auth/index.ts` | `getApiUser()`, `apiFetch()`, `unauthorizedResponse()` |
+| `lib/supabase.ts` | Supabase anon client |
+| `lib/checks/index.ts` | Check orchestrator (HTTP, SSL, SEO, domain) |
+| `lib/reports/compiler.ts` | Pulls DB data → builds `ReportContent` |
+| `components/ui.tsx` | All shared UI primitives (Badge, KPI, Tabs, Sparkline, etc.) |
+| `vercel.json` | Cron schedules + build config |
 
 ---
 
-# PLAYWRIGHT SYSTEM
+## CRON JOBS
 
-Playwright is a core system.
+| Route | Schedule | Purpose |
+|---|---|---|
+| `/api/cron/uptime` | `*/15 * * * *` | Lightweight HTTP availability checks |
+| `/api/cron/daily` | `0 2 * * *` | Full checks: SSL, SEO, domain, PageSpeed, analytics sync |
+| `/api/cron/monthly` | `30 0 1 * *` | Auto-generate previous month's reports for all sites |
 
-Purpose:
-- Detect visual changes
-- Detect broken layouts
-- Test forms
-- Capture screenshots
-- Detect regressions
-
----
-
-# PLAYWRIGHT SETTINGS
-
-Each client can configure:
-- Pages to test
-- Forms to test
-- CSS selectors/classes
-- Enabled checks
-- Visual testing
-- Form testing
+All cron routes require `Authorization: Bearer <CRON_SECRET>`.
 
 ---
 
-# PLAYWRIGHT AUTOMATION
+## ENVIRONMENT VARIABLES
 
-GitHub Actions must:
-- Run scheduled tests
-- Support manual triggers
-- Install Playwright
-- Run tests
-- Upload screenshots/logs to Supabase
+Set in Vercel → Settings → Environment Variables → Production.
 
-Workflow file:
+```env
+# Supabase (required)
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
 
-text .github/workflows/playwright.yml 
+# AI
+ANTHROPIC_API_KEY=               # console.anthropic.com
 
----
+# Google
+GOOGLE_SERVICE_ACCOUNT_JSON=     # Full JSON key stringified as single line
+GOOGLE_ANALYTICS_PROPERTY_ID=
+GOOGLE_SEARCH_CONSOLE_SITE_URL=
 
-# SUPABASE STORAGE STRUCTURE
+# Microsoft Clarity
+CLARITY_API_KEY=
 
-Use ONE private storage bucket.
+# Email — Resend
+EMAIL_PROVIDER_API_KEY=
+EMAIL_FROM_ADDRESS=
+ALERT_EMAIL_RECIPIENTS=          # Comma-separated
 
-Bucket name example:
+# WhatsApp — Twilio
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
+TWILIO_WHATSAPP_FROM=
 
-text watchtower-artifacts 
+# App
+APP_URL=https://eye-of-horus-2point0-alpha.vercel.app
+CRON_SECRET=                     # Strong random string
 
-Folder structure:
-
-text /client-id/   /yyyy-mm/     /run-id/       screenshots/       diffs/       logs/       reports/ 
-
-Example:
-
-text /sadv/2026-05/run_001/screenshots/homepage.png 
-
-This structure is important for:
-- History
-- Auditing
-- Monthly reporting
-- Visual comparisons
-
----
-
-# REPORTING SYSTEM
-
-Reports are monthly.
-
-Reports require approval before client access.
-
-Status flow:
-- Draft
-- Pending Approval
-- Approved
-
-Only approved reports:
-- Appear in client portal
-- Can be emailed
-- Can generate PDFs
+# GitHub (for Watchtower "Re-scan now" button)
+GITHUB_REPO=                     # owner/repo format
+GITHUB_TOKEN=                    # PAT with actions:write
+```
 
 ---
 
-# AI REPORTING
+## WORDPRESS PLUGIN
 
-Use OpenAI to generate:
-- Intro copy
-- Plain-English summaries
-- Performance analysis
-- Recommendations
-- Status explanations
+Current version: **v2.3.0** — `wordpress plugin/extracted/eye-of-horus-client/eye-of-horus-client.php`
 
-Admins can edit AI-generated copy before approval.
+Authentication: `X-EOH-KEY` header matched against `sites.api_key`.
 
----
+Data collected per sync: WP/PHP/MySQL versions, all plugins (active/inactive/update available), themes, Wordfence security data, WPForms submission counts per form (total / this month / last month), other detected form plugins, server info (DB size, cron, timezone).
 
-# EMAIL SYSTEM
-
-Use Resend for:
-- Client invites
-- Report emails
-- Approval emails
-- Notifications
-
-Keep API keys server-side only.
+To install on a new client site:
+1. Dashboard → Sites → [Site] → Integrations tab → Generate API Key
+2. Install the plugin zip on the WordPress site
+3. Enter dashboard URL + API key in plugin settings → Save → Sync Now
 
 ---
 
-# CLIENT PORTAL
+## PLAYWRIGHT / WATCHTOWER
 
-Clients can:
-- Register
-- Login
-- View approved reports
-- Download PDFs
-- Print reports
-- View historical reports
+```bash
+npm run check:playwright    # runs tsx playwright/runner.ts
+```
 
-Clients only see their own company data.
+3 devices per run: desktop (1440px), tablet (768px), mobile (390px iPhone UA).
 
----
+Storage: private Supabase bucket `watchtower-artifacts`. All URLs are signed (1-year TTL).
 
-# REPORT LINKS
+Results write to: `playwright_checks`, `playwright_baselines`, `issues`.
 
-Public report links:
-- Remain active
-- Always show latest approved previous-month report
-
-Logged-in users can access full report history.
+GitHub Actions: `.github/workflows/playwright.yml` — needs `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` as repo secrets.
 
 ---
 
-# DEVELOPMENT STAGES
+## COMMON COMMANDS
 
-# STAGE 1 — STRUCTURE & UI FIXES
-Tasks:
-- Move Clarity into Analytics
-- Rename History to Watchtower Checks
-- Improve dashboard issue visibility
+```bash
+cd "Eye of Horus 2.0"
 
----
-
-# STAGE 2 — WORDPRESS UPDATE ISSUES
-Tasks:
-- Detect updates
-- Create issues automatically
-- Show issues on dashboard
-- Add update buttons
+npm run dev               # local dev server
+npx tsc --noEmit          # type check — must pass before any commit
+npm run build             # production build — must pass before declaring feature done
+npm run check:playwright  # run Watchtower checks
+vercel --prod             # deploy to production
+```
 
 ---
 
-# STAGE 3 — WORDFENCE INTEGRATION
-Tasks:
-- Extend plugin
-- Fetch Wordfence data
-- Display security insights
+## ENGINEERING RULES
+
+- Always TypeScript. No `any`. No implicit types on function params.
+- Reusable components. If you write a UI pattern twice, extract it.
+- Always add loading states and empty states.
+- Never expose secrets to the frontend. API keys stay server-side only.
+- RLS on every table. Service role bypasses it server-side — that is intentional.
+- Multi-tenant by default. Every query must be scoped to the correct site/client.
+- Write idempotent migrations. Never destructive without explicit confirmation.
 
 ---
 
-# STAGE 4 — WPFORMS ANALYTICS
-Tasks:
-- Fetch submissions
-- Fetch abandonment
-- Field analytics
-- Multiple-choice stats
+## WHAT NOT TO DO
 
----
-
-# STAGE 5 — PLAYWRIGHT FOUNDATION
-Tasks:
-- Client Playwright settings
-- Screenshot system
-- Form testing
-- Supabase uploads
-
----
-
-# STAGE 6 — GITHUB ACTIONS
-Tasks:
-- Scheduled runs
-- Manual runs
-- Upload logs/screenshots
-- Save run history
-
----
-
-# STAGE 7 — WATCHTOWER DASHBOARD
-Tasks:
-- Show test history
-- Screenshot diffs
-- Failed tests
-- Logs
-- Run summaries
-
----
-
-# STAGE 8 — REPORTING SYSTEM
-Tasks:
-- Monthly snapshots
-- Approval workflow
-- AI summaries
-- Report editing
-
----
-
-# STAGE 9 — PDF & EMAIL DELIVERY
-Tasks:
-- Generate PDFs
-- Email reports
-- Public report links
-
----
-
-# STAGE 10 — CLIENT PORTAL
-Tasks:
-- Registration
-- Approval flow
-- Client permissions
-- Historical reports
-
----
-
-# DATABASE REQUIREMENTS
-
-Need tables for:
-- clients
-- websites
-- issues
-- wordpress_updates
-- wordfence_scans
-- forms
-- form_submissions
-- form_abandonment
-- playwright_runs
-- playwright_results
-- screenshots
-- reports
-- report_sections
-- report_revisions
-- client_users
-- invitations
-
----
-
-# IMPORTANT ENGINEERING RULES
-
-- Always use TypeScript.
-- Use reusable components.
-- Use proper loading states.
-- Use proper error handling.
-- Never expose secrets on frontend.
-- Use Supabase RLS everywhere.
-- Keep architecture modular.
-- Keep all systems multi-tenant.
-- Build scalable structures from the beginning.
-
----
-
-# CLAUDE WORKFLOW RULES
-
-Claude must:
-1. Read CLAUDE.md first.
-2. Read progress.md second.
-3. Continue from latest unfinished stage.
-4. Update progress.md after completing tasks.
-5. Create documentation files inside /docs when needed.
-6. Never remove previous progress history.
-7. Keep commits clean and descriptive.
-
----
-
-# REQUIRED DOCUMENTATION FILES
-
-Claude should generate and maintain:
-
-text /docs/architecture.md /docs/database-schema.md /docs/api-spec.md /docs/playwright-system.md /docs/reporting-system.md /docs/wordpress-plugin.md 
-
----
-
-# SUCCESS CRITERIA
-
-Eye of Horus succeeds when Wetpaint can:
-
-- Monitor all client websites centrally
-- Detect issues proactively
-- Reduce manual QA
-- Automate reporting
-- Track UX and visual problems
-- Give clients premium reporting access
-- Operate faster with fewer manual processes
-
-The platform should feel like an AI-powered operations centre for client websites.
+- Do not add demo or seed data.
+- Do not use `alert()` or `confirm()` — use toast or inline error UI.
+- Do not add code to root-level `components/` or `context/`.
+- Do not commit `.env.local` or any secrets.
+- Do not delete entries from `progress.md`.
+- Do not use `localStorage` for auth. Use Supabase session only.
+- Do not leave `// TODO` comments in user-facing code — either implement or remove.

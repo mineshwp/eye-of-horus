@@ -107,8 +107,10 @@ function calcHealthScore(
   }
 
   // ── SSL ──────────────────────────────────────────────────────────────────
+  // SSL does NOT affect the health/availability score — it is owned by the
+  // Security score (calcSecurityScore). We still raise issues here so SSL
+  // problems surface in the issues list and Watchtower.
   if (!ssl.valid && ssl.error) {
-    score -= 30;
     issueDescriptions.push({
       title: `SSL certificate issue: ${ssl.error}`,
       severity: "critical",
@@ -118,7 +120,6 @@ function calcHealthScore(
     });
   } else if (ssl.valid && ssl.daysRemaining !== null) {
     if (ssl.daysRemaining < 7) {
-      score -= 20;
       issueDescriptions.push({
         title: `SSL certificate expires in ${ssl.daysRemaining} day${ssl.daysRemaining === 1 ? "" : "s"}`,
         severity: "critical",
@@ -127,7 +128,6 @@ function calcHealthScore(
         recommended: "Renew SSL certificate immediately. Check auto-renewal is working on the hosting panel",
       });
     } else if (ssl.daysRemaining < 30) {
-      score -= 10;
       issueDescriptions.push({
         title: `SSL certificate expires in ${ssl.daysRemaining} days`,
         severity: "high",
@@ -165,9 +165,10 @@ function calcHealthScore(
   }
 
   // ── Domain expiry ────────────────────────────────────────────────────────
+  // Domain expiry does NOT affect the health/availability score — it is owned
+  // by the Security score (calcSecurityScore). Issues are still raised here.
   if (domain.daysRemaining !== null) {
     if (domain.daysRemaining < 7) {
-      score -= 25;
       issueDescriptions.push({
         title: `Domain expires in ${domain.daysRemaining} day${domain.daysRemaining === 1 ? "" : "s"} — renew immediately`,
         severity: "critical",
@@ -176,7 +177,6 @@ function calcHealthScore(
         recommended: "Renew the domain immediately through your domain registrar before it expires",
       });
     } else if (domain.daysRemaining < 30) {
-      score -= 10;
       issueDescriptions.push({
         title: `Domain expires in ${domain.daysRemaining} days`,
         severity: "high",

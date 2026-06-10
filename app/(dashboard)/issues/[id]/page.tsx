@@ -216,7 +216,13 @@ export default function IssueDetailPage({ params }: PageProps) {
   const userInitials = currentUser ? getInitials(currentUser.name) : "?";
 
   // Build evidence block from issue data
-  const hasEvidence = issue.evidence && Object.keys(issue.evidence).length > 0;
+  const ev: Record<string, unknown> = (issue.evidence ?? {}) as Record<string, unknown>;
+  const hasEvidence = Object.keys(ev).length > 0;
+  const screenshotUrl = typeof ev.screenshot_url === "string" ? ev.screenshot_url : null;
+  const diffUrl = typeof ev.diff_url === "string" ? ev.diff_url : null;
+  const hasScreenshots = !!(screenshotUrl || diffUrl);
+  const evidenceRows = buildEvidenceRows(ev);
+  const deepLinkTab = evidenceTabForCategory(issue.category);
 
   return (
     <div className="page fade-in">
@@ -292,27 +298,58 @@ export default function IssueDetailPage({ params }: PageProps) {
               </div>
             </div>
             <div className="card-pad">
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-                <EvidenceShot label="Baseline" showCTA siteUrl={site.url} />
-                <EvidenceShot label="Current scan" showCTA={false} siteUrl={site.url} />
-              </div>
+              {hasScreenshots && (
+                <div style={{ display: "grid", gridTemplateColumns: screenshotUrl && diffUrl ? "1fr 1fr" : "1fr", gap: 14 }}>
+                  {screenshotUrl && <EvidenceImage label="Current scan" src={screenshotUrl} siteUrl={site.url} />}
+                  {diffUrl && <EvidenceImage label="Detected change" src={diffUrl} siteUrl={site.url} />}
+                </div>
+              )}
 
-              {hasEvidence && (
-                <div style={{ marginTop: 14, padding: "12px 14px", background: "var(--bg-inset)", border: "1px solid var(--border-soft)", borderRadius: 10 }}>
-                  <div className="label-strip" style={{ marginBottom: 6 }}>Detected change region</div>
-                  <code style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text-secondary)", display: "block" }}>
-                    {JSON.stringify(issue.evidence, null, 2)}
-                  </code>
+              {evidenceRows.length > 0 && (
+                <div style={{ marginTop: hasScreenshots ? 14 : 0, padding: "12px 14px", background: "var(--bg-inset)", border: "1px solid var(--border-soft)", borderRadius: 10 }}>
+                  <div className="label-strip" style={{ marginBottom: 10 }}>
+                    {hasScreenshots ? "Scan details" : "Detection details"}
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "10px 18px" }}>
+                    {evidenceRows.map((row) => (
+                      <div key={row.label}>
+                        <div style={{ fontSize: 11, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 2 }}>
+                          {row.label}
+                        </div>
+                        {row.href ? (
+                          <a href={row.href} target="_blank" rel="noopener noreferrer" style={{ fontSize: 13.5, color: "var(--cyan)", wordBreak: "break-word" }}>
+                            {row.value}
+                          </a>
+                        ) : (
+                          <div style={{ fontSize: 13.5, color: "var(--text-primary)", fontWeight: 500, wordBreak: "break-word" }}>
+                            {row.value}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 
               {!hasEvidence && (
-                <div style={{ marginTop: 14, padding: "12px 14px", background: "var(--bg-inset)", border: "1px solid var(--border-soft)", borderRadius: 10 }}>
+                <div style={{ padding: "12px 14px", background: "var(--bg-inset)", border: "1px solid var(--border-soft)", borderRadius: 10 }}>
                   <div className="label-strip" style={{ marginBottom: 6 }}>Detection method</div>
                   <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>
                     {issue.changeType} · {issue.confidence}% confidence
                   </div>
                 </div>
+              )}
+
+              {deepLinkTab && (
+                <button
+                  className="btn ghost"
+                  type="button"
+                  style={{ marginTop: 14 }}
+                  onClick={() => router.push(`/sites/${site.id}?tab=${encodeURIComponent(deepLinkTab)}`)}
+                >
+                  View full details in {deepLinkTab} tab
+                  <Icon name="arrow" size={13} />
+                </button>
               )}
             </div>
           </div>
@@ -515,22 +552,126 @@ const PanelField = ({ label, children }: { label: string; children: React.ReactN
   </div>
 );
 
-const EvidenceShot = ({ label, showCTA, siteUrl }: { label: string; showCTA: boolean; siteUrl: string }) => (
-  <div>
-    <div className="label-strip" style={{ marginBottom: 8 }}>{label}</div>
-    <div className="evidence-shot" style={{ position: "relative" }}>
-      <div className="vp-head" style={{ height: 24, background: "rgba(255,255,255,0.04)" }}>
-        <div className="vp-dots"><span /><span /><span /></div>
-        <div className="vp-url">{siteUrl}</div>
-      </div>
-      <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10, height: "calc(100% - 24px)" }}>
-        <div className="mock-block h1" style={{ width: "65%" }} />
-        <div className="mock-block p" />
-        <div className="mock-block p s" />
-        <div className="mock-block img" style={{ minHeight: 80 }} />
-        {showCTA && <div className="mock-block btn-pri" style={{ background: "var(--gold)" }} />}
-        <div className="mock-block p s" />
+// Renders a real Watchtower screenshot/diff artifact (signed Supabase URL).
+// Falls back to a message if the image is missing or the signed URL has expired.
+const EvidenceImage = ({ label, src, siteUrl }: { label: string; src: string; siteUrl: string }) => {
+  const [failed, setFailed] = useState(false);
+  return (
+    <div>
+      <div className="label-strip" style={{ marginBottom: 8 }}>{label}</div>
+      <div className="evidence-shot" style={{ position: "relative", overflow: "hidden" }}>
+        <div className="vp-head" style={{ height: 24, background: "rgba(255,255,255,0.04)" }}>
+          <div className="vp-dots"><span /><span /><span /></div>
+          <div className="vp-url">{siteUrl}</div>
+        </div>
+        {failed ? (
+          <div style={{ padding: 24, height: "calc(100% - 24px)", display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center", fontSize: 12.5, color: "var(--text-tertiary)" }}>
+            Screenshot unavailable — the artifact link may have expired. Re-run the Watchtower check to refresh it.
+          </div>
+        ) : (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={src}
+            alt={label}
+            onError={() => setFailed(true)}
+            style={{ display: "block", width: "100%", height: "auto" }}
+          />
+        )}
       </div>
     </div>
-  </div>
-);
+  );
+};
+
+// Human-readable labels for known evidence keys; unknown keys are humanised generically.
+const EVIDENCE_LABELS: Record<string, string> = {
+  score: "SEO score",
+  brokenLinks: "Broken links",
+  pagesCrawled: "Pages crawled",
+  auditId: "Audit ID",
+  httpStatus: "HTTP status",
+  responseTimeMs: "Response time",
+  error: "Error",
+  diff_percentage: "Visual difference",
+  device: "Device",
+  page_path: "Page",
+  checked_at: "Checked at",
+  rule: "WCAG rule",
+  impact: "Impact",
+  nodes: "Affected elements",
+  sample_targets: "Sample selectors",
+  help_url: "Reference",
+  url: "URL",
+  status: "Status",
+  rumHits: "Real-user hits",
+  lookbackDays: "Lookback (days)",
+  total: "Total",
+  pct: "Percentage",
+  summary: "Summary",
+  deployedAt: "Deployed at",
+  from: "From",
+  to: "To",
+  flag: "Flag",
+};
+
+function humaniseKey(key: string): string {
+  return key
+    .replace(/_/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/\burl\b/i, "link")
+    .replace(/^./, (c) => c.toUpperCase());
+}
+
+interface EvidenceRow {
+  label: string;
+  value: string;
+  href?: string;
+}
+
+// Turns the raw evidence object into labelled, formatted rows.
+// Image artifacts (screenshot_url, diff_url) are rendered separately, so skip them here.
+function buildEvidenceRows(ev: Record<string, unknown>): EvidenceRow[] {
+  const rows: EvidenceRow[] = [];
+  for (const [key, raw] of Object.entries(ev)) {
+    if (key === "screenshot_url" || key === "diff_url") continue;
+    if (raw == null || raw === "") continue;
+
+    const label = EVIDENCE_LABELS[key] ?? humaniseKey(key);
+
+    // Links
+    if ((key.endsWith("_url") || key === "url") && typeof raw === "string") {
+      rows.push({ label, value: raw, href: raw });
+      continue;
+    }
+
+    let value: string;
+    if (Array.isArray(raw)) {
+      value = raw.length === 0 ? "None" : raw.map((x) => String(x)).join(", ");
+    } else if (typeof raw === "object") {
+      value = JSON.stringify(raw);
+    } else if (typeof raw === "boolean") {
+      value = raw ? "Yes" : "No";
+    } else if (key === "score") {
+      value = `${raw} / 100`;
+    } else if (key === "responseTimeMs") {
+      value = `${raw} ms`;
+    } else if (key === "diff_percentage" || key === "pct") {
+      value = `${raw}%`;
+    } else {
+      value = String(raw);
+    }
+    rows.push({ label, value });
+  }
+  return rows;
+}
+
+// Maps an issue category to the relevant site detail tab for a deep-link, if any.
+function evidenceTabForCategory(category: string): string | null {
+  const c = category.toLowerCase();
+  if (c.includes("visual")) return "Visual changes";
+  if (c.includes("seo")) return "SEO";
+  if (c.includes("performance") || c.includes("speed")) return "Performance";
+  if (c.includes("security")) return "Security";
+  if (c.includes("form")) return "Forms";
+  if (c.includes("uptime") || c.includes("availability")) return "History";
+  return null;
+}

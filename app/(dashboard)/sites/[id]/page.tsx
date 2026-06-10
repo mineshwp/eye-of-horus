@@ -505,7 +505,7 @@ export default function SiteDetailPage({ params }: PageProps) {
   const searchParams = useSearchParams();
   const [tab, setTab] = useState<string>(() => {
     const t = searchParams?.get('tab') ?? '';
-    const valid = ["Overview","Issues","Analytics","SEO","Marketing","Business","WordPress","Performance","Security","Forms","History","Integrations"];
+    const valid = ["Overview","Issues","Analytics","SEO","Marketing","WordPress","Performance","Security","Forms","History","Visual changes","Integrations"];
     return valid.includes(t) ? t : "Overview";
   });
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -553,6 +553,15 @@ export default function SiteDetailPage({ params }: PageProps) {
   });
   const overviewDesktopMetrics = perfMetrics.find((m) => m.device === "desktop") ?? null;
   const overviewMobileMetrics = perfMetrics.find((m) => m.device === "mobile") ?? null;
+
+  // Real uptime footnote derived from check history (no hardcoded copy)
+  const downCheckCount = uptimeHistory.filter((c) => c.status === "down").length;
+  const uptimeFootnote =
+    uptimeHistory.length === 0
+      ? "Awaiting first uptime check"
+      : downCheckCount === 0
+      ? `No downtime in last ${uptimeHistory.length} checks`
+      : `${downCheckCount} outage${downCheckCount === 1 ? "" : "s"} in last ${uptimeHistory.length} checks`;
 
   return (
     <div className="page fade-in">
@@ -645,14 +654,6 @@ export default function SiteDetailPage({ params }: PageProps) {
               } catch (e) {
                 console.error("[EOH] WordPress reconcile request failed:", e);
               }
-              // Best-effort: trigger the Playwright/visual scan in CI. Safe to ignore if not configured.
-              try {
-                const pw = await apiFetch("/api/playwright/run", { method: "POST", body: JSON.stringify({ testForms: false }) });
-                const pwData = await pw.json().catch(() => ({}));
-                if (!pw.ok) console.info("[EOH] Playwright run not triggered:", pwData.error);
-              } catch (e) {
-                console.info("[EOH] Playwright run trigger skipped:", e);
-              }
               await runScan(site.id);
               await Promise.all([
                 fetchUptimeHistory(),
@@ -671,7 +672,7 @@ export default function SiteDetailPage({ params }: PageProps) {
       </div>
 
       <Tabs
-        tabs={["Overview", "Issues", "Analytics", "SEO", "Marketing", "Business", "WordPress", "Performance", "Security", "Forms", "History", "Visual changes", "Integrations"]}
+        tabs={["Overview", "Issues", "Analytics", "SEO", "Marketing", "WordPress", "Performance", "Security", "Forms", "History", "Visual changes", "Integrations"]}
         active={tab}
         onChange={setTab}
       />
@@ -691,7 +692,7 @@ export default function SiteDetailPage({ params }: PageProps) {
                 marginBottom: 18,
               }}
             >
-              <ScoreCard label="Health" value={site.health} />
+              <ScoreCard label="Availability" value={site.health} caption="Uptime · response · SEO" />
               <PageSpeedOverviewCard label="Desktop" metric={overviewDesktopMetrics} />
               <PageSpeedOverviewCard label="Mobile" metric={overviewMobileMetrics} />
               <ScoreCard label="Security" value={overviewSecurityScore} />
@@ -705,7 +706,7 @@ export default function SiteDetailPage({ params }: PageProps) {
                   <span className="unit">% / 30d</span>
                 </div>
                 <div className="kpi-foot">
-                  <span className="delta flat">No downtime in 14 days</span>
+                  <span className={`delta ${downCheckCount === 0 ? "flat" : "down"}`}>{uptimeFootnote}</span>
                 </div>
               </div>
             </div>
@@ -857,7 +858,7 @@ export default function SiteDetailPage({ params }: PageProps) {
                       color="#22C55E"
                     />
                     <TrendRow
-                      label="Health score"
+                      label="Availability"
                       value={site.health}
                       delta="-6"
                       trend={[74, 76, 72, 70, 71, 70, 68, 67, 66, 68, 66, 64, 64, 64]}
@@ -1037,7 +1038,6 @@ export default function SiteDetailPage({ params }: PageProps) {
         {tab === "Analytics" && <AnalyticsTab site={site} snapshot={analyticsSnapshot} onRefresh={refreshAnalytics} refreshing={analyticsRefreshing} rum={rumSummary} />}
         {tab === "SEO" && <SeoTab site={site} snapshot={analyticsSnapshot} onRefresh={refreshAnalytics} refreshing={analyticsRefreshing} audit={seoAudit} brokenLinks={seoBrokenLinks} onCrawl={runSeoCrawl} crawling={seoCrawling} />}
         {tab === "Marketing" && <MarketingTab site={site} snapshot={analyticsSnapshot} />}
-        {tab === "Business" && <BusinessTab site={site} wpSnapshot={wpSnapshot} rum={rumSummary} />}
         {tab === "WordPress" && (
           <WordPressTab
             site={site}
@@ -1318,7 +1318,14 @@ function calculateSecurityOverviewScore({
     if ((secData.error_log_lines?.length ?? 0) > 0) score -= 10;
   }
 
-  const securityIssues = issues.filter((i) => i.category?.toLowerCase() === "security" && i.status !== "Resolved");
+  // Exclude SSL-certificate issues here — SSL is already scored directly above
+  // via securityCheck.ssl_days_remaining, so counting the issue too would double-dock.
+  const securityIssues = issues.filter(
+    (i) =>
+      i.category?.toLowerCase() === "security" &&
+      i.status !== "Resolved" &&
+      !i.title?.toLowerCase().startsWith("ssl certificate"),
+  );
   if (securityIssues.length > 0) {
     hasSecurityData = true;
     score -= securityIssues.reduce((sum, issue) => {
@@ -1333,7 +1340,7 @@ function calculateSecurityOverviewScore({
   return Math.max(0, Math.min(100, score));
 }
 
-const ScoreCard = ({ label, value }: { label: string; value: number }) => {
+const ScoreCard = ({ label, value, caption }: { label: string; value: number; caption?: string }) => {
   const color = value >= 90 ? "#22C55E" : value >= 75 ? "#00E5FF" : value >= 60 ? "#F59E0B" : "#EF4444";
   return (
     <div className="card kpi-card">
@@ -1343,6 +1350,9 @@ const ScoreCard = ({ label, value }: { label: string; value: number }) => {
         {value}
         <span className="unit">/ 100</span>
       </div>
+      {caption && (
+        <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 2 }}>{caption}</div>
+      )}
       <div style={{ position: "relative", height: 6, borderRadius: 4, background: "rgba(255,255,255,0.06)", marginTop: 4 }}>
         <div
           style={{
@@ -2469,10 +2479,19 @@ const SeoTab = ({
 }) => {
   const gsc = snapshot?.gsc as { queries?: unknown[]; pages?: unknown[]; metrics?: Record<string, unknown> } | null | undefined;
   const isConnected = !!(snapshot?.integration?.gsc_site_url);
-  const strikingDistance = (gsc?.metrics?.strikingDistance as Array<{ query: string; impressions: number; position: number }> | null) ?? [];
   type GSCMetricsType = { clicks: number; impressions: number; ctr: number; position: number; strikingDistance: Array<{ query: string; impressions: number; position: number }>; previousPeriod: { clicks: number; impressions: number } | null; fetchedAt?: string };
   const gscMetrics = (gsc?.metrics as GSCMetricsType | null) ?? null;
   const gscQueries = (gsc?.queries as Array<{ query: string; clicks: number; impressions: number; ctr: number; position: number }> | null) ?? null;
+  const storedStriking = (gsc?.metrics?.strikingDistance as Array<{ query: string; impressions: number; position: number }> | null) ?? [];
+  // Fallback: if the stored striking-distance list is empty (e.g. an older snapshot
+  // taken under the previous, stricter impressions threshold), derive it on the fly
+  // from the stored query list so real page-2 opportunities still surface.
+  const strikingDistance = storedStriking.length > 0
+    ? storedStriking
+    : (gscQueries ?? [])
+        .filter((q) => q.position >= 11 && q.position <= 20)
+        .sort((a, b) => b.impressions - a.impressions)
+        .slice(0, 10);
   const gscDelta = (cur: number, prev: number | undefined): { val: string; dir: "up" | "down" | "flat" } => {
     if (!prev) return { val: "", dir: "flat" };
     const d = ((cur - prev) / prev) * 100;
@@ -2722,7 +2741,7 @@ const SeoTab = ({
                     <div style={{ fontFamily: "var(--font-display)", fontSize: 16, lineHeight: 1.45, fontWeight: 500, margin: "10px 0 12px" }}>
                       {strikingDistance.length > 0
                         ? `${strikingDistance.length} keyword${strikingDistance.length !== 1 ? "s" : ""} in striking distance — positions 11–20.`
-                        : "Organic performance is tracked. Check back as more data comes in."}
+                        : "No page-2 keywords right now — every tracked query ranks on page 1 or doesn't yet show on page 2."}
                     </div>
                     <ul style={{ margin: 0, paddingLeft: 18, color: "var(--text-secondary)", fontSize: 13, lineHeight: 1.7 }}>
                       {strikingDistance.length > 0 ? (
@@ -2732,7 +2751,7 @@ const SeoTab = ({
                           </li>
                         ))
                       ) : (
-                        <li>Improve content on your top pages to push more keywords into striking distance.</li>
+                        <li>Build content around the keywords your top pages already rank for to push them onto page 2 and into striking distance.</li>
                       )}
                     </ul>
                   </div>
@@ -2849,190 +2868,6 @@ const SeoTab = ({
         <div style={{ position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)", background: "var(--bg-card)", border: "1px solid var(--border-soft)", borderRadius: 10, padding: "10px 20px", fontSize: 13, fontWeight: 500, color: "var(--text-primary)", boxShadow: "0 4px 24px rgba(0,0,0,0.5)", zIndex: 9999, pointerEvents: "none" }}>{seoToast}</div>
       )}
     </>
-  );
-};
-
-// ============ Business Tab Component ============
-
-interface BusinessCampaign { name: string; landing_path: string; monthly_spend: number }
-interface BusinessCompetitor { name: string; url: string; performance?: number | null; seo?: number | null; checked_at?: string | null }
-interface BusinessInputs {
-  site_id: string;
-  currency: string;
-  conversion_type: "leads" | "sales";
-  avg_conversion_value: number;
-  monthly_ad_spend: number;
-  monthly_retainer: number;
-  target_conversion_rate: number;
-  qualified_leads: number;
-  campaigns: BusinessCampaign[];
-  competitors: BusinessCompetitor[];
-  notes: string | null;
-}
-
-const BusinessTab = ({
-  site,
-  wpSnapshot,
-  rum,
-}: {
-  site: { id: string; perf?: number };
-  wpSnapshot: WpSnapshot | null;
-  rum: RumSummary | null;
-}) => {
-  const [b, setB] = useState<BusinessInputs | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [benchIdx, setBenchIdx] = useState<number | null>(null);
-
-  useEffect(() => {
-    apiFetch(`/api/sites/${site.id}/business`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (d?.business) setB(d.business as BusinessInputs); })
-      .catch(() => {});
-  }, [site.id]);
-
-  const inputStyle: React.CSSProperties = { background: "var(--bg-inset)", border: "1px solid var(--border-mid)", borderRadius: 8, color: "var(--text-primary)", fontSize: 13, padding: "8px 12px", width: "100%", outline: "none", fontFamily: "inherit" };
-
-  const save = async (next?: BusinessInputs) => {
-    const payload = next ?? b;
-    if (!payload) return;
-    setSaving(true);
-    const res = await apiFetch(`/api/sites/${site.id}/business`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
-    }).catch(() => null);
-    if (res?.ok) { const d = await res.json(); setB(d.business); setSaved(true); setTimeout(() => setSaved(false), 2000); }
-    setSaving(false);
-  };
-
-  if (!b) return <div className="card card-pad" style={{ textAlign: "center", padding: 40 }}><span className="muted">Loading business inputs…</span></div>;
-
-  const money = (n: number) => `${b.currency} ${Math.round(n).toLocaleString()}`;
-  const set = (patch: Partial<BusinessInputs>) => setB({ ...b, ...patch });
-
-  // Conversions this month from WordPress form submissions.
-  const conversions = (wpSnapshot?.form_data ?? []).reduce((sum, f) => sum + (f.completed_month ?? f.submissions_month ?? 0), 0);
-  const revenue = conversions * b.avg_conversion_value;
-  const cost = b.monthly_ad_spend + b.monthly_retainer;
-  const roi = cost > 0 ? Math.round(((revenue - cost) / cost) * 100) : null;
-  const cpc = conversions > 0 ? cost / conversions : null;
-  const sessionsFor = (path: string) => rum?.sessions.entryPages.find((e) => e.key === path)?.count ?? 0;
-
-  const runBenchmark = async (idx: number) => {
-    const c = b.competitors[idx];
-    if (!c?.url) return;
-    setBenchIdx(idx);
-    const res = await apiFetch(`/api/sites/${site.id}/business/benchmark`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: c.url }),
-    }).catch(() => null);
-    if (res?.ok) {
-      const d = await res.json();
-      const competitors = b.competitors.map((x, i) => i === idx ? { ...x, performance: d.performance, seo: d.seo, checked_at: d.checked_at } : x);
-      await save({ ...b, competitors });
-    }
-    setBenchIdx(null);
-  };
-
-  const field = (label: string, value: number, key: keyof BusinessInputs, prefix?: string) => (
-    <div>
-      <label className="muted" style={{ fontSize: 11, display: "block", marginBottom: 4 }}>{label}{prefix ? ` (${prefix})` : ""}</label>
-      <input type="number" min={0} style={inputStyle} value={value}
-        onChange={(e) => set({ [key]: parseFloat(e.target.value) || 0 } as unknown as Partial<BusinessInputs>)} />
-    </div>
-  );
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      {/* ROI summary */}
-      <div className="grid-4">
-        {[
-          { label: "Conversions", value: conversions.toLocaleString(), sub: `${b.conversion_type} this month` },
-          { label: "Est. revenue", value: money(revenue), sub: `${conversions} × ${money(b.avg_conversion_value)}` },
-          { label: "Total cost", value: money(cost), sub: "ad spend + retainer" },
-          { label: "ROI", value: roi == null ? "—" : `${roi}%`, sub: cpc != null ? `${money(cpc)} / conversion` : "set costs", good: roi != null && roi >= 0, bad: roi != null && roi < 0 },
-        ].map((k) => (
-          <div key={k.label} className="card" style={{ padding: "14px 16px" }}>
-            <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>{k.label}</div>
-            <div style={{ fontSize: 22, fontWeight: 700, fontFamily: "var(--font-display)", color: k.bad ? "var(--red)" : k.good ? "var(--green)" : "var(--text-primary)" }}>{k.value}</div>
-            <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>{k.sub}</div>
-          </div>
-        ))}
-      </div>
-      <div className="muted" style={{ fontSize: 11, marginTop: -8 }}>
-        Estimates use admin-entered values × actual form submissions. Update the inputs below as the client supplies figures.
-      </div>
-
-      {/* Inputs */}
-      <div className="card">
-        <div className="card-head"><h3><Icon name="settings" size={14} /> Client business inputs</h3>
-          <button className="btn sm primary" style={{ marginLeft: "auto" }} onClick={() => save()} disabled={saving} type="button">{saving ? "Saving…" : saved ? "Saved ✓" : "Save"}</button>
-        </div>
-        <div className="card-pad" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
-          <div>
-            <label className="muted" style={{ fontSize: 11, display: "block", marginBottom: 4 }}>Currency</label>
-            <input style={inputStyle} value={b.currency} onChange={(e) => set({ currency: e.target.value.slice(0, 8) })} />
-          </div>
-          <div>
-            <label className="muted" style={{ fontSize: 11, display: "block", marginBottom: 4 }}>Conversion type</label>
-            <select style={inputStyle} value={b.conversion_type} onChange={(e) => set({ conversion_type: e.target.value as "leads" | "sales" })}>
-              <option value="leads">Leads</option>
-              <option value="sales">Sales</option>
-            </select>
-          </div>
-          {field("Avg value / conversion", b.avg_conversion_value, "avg_conversion_value", b.currency)}
-          {field("Monthly ad spend", b.monthly_ad_spend, "monthly_ad_spend", b.currency)}
-          {field("Monthly retainer", b.monthly_retainer, "monthly_retainer", b.currency)}
-          {field("Target conversion rate", b.target_conversion_rate, "target_conversion_rate", "%")}
-          {field("Qualified leads (manual)", b.qualified_leads, "qualified_leads")}
-        </div>
-      </div>
-
-      {/* Campaigns */}
-      <div className="card">
-        <div className="card-head"><h3><Icon name="bolt" size={14} /> Campaign landing pages</h3>
-          <button className="btn sm ghost" style={{ marginLeft: "auto" }} type="button" onClick={() => set({ campaigns: [...b.campaigns, { name: "", landing_path: "/", monthly_spend: 0 }] })}><Icon name="plus" size={12} /> Add</button>
-        </div>
-        <div className="card-pad" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {b.campaigns.length === 0 && <div className="muted" style={{ fontSize: 12 }}>No campaigns yet. Add a campaign with its landing page to track traffic and estimated return.</div>}
-          {b.campaigns.map((c, i) => {
-            const sess = sessionsFor(c.landing_path);
-            const estRev = sess * (b.target_conversion_rate / 100) * b.avg_conversion_value;
-            const roas = c.monthly_spend > 0 ? (estRev / c.monthly_spend).toFixed(2) : "—";
-            return (
-              <div key={i} style={{ display: "grid", gridTemplateColumns: "1.4fr 1.4fr 1fr auto auto", gap: 8, alignItems: "center" }}>
-                <input style={inputStyle} placeholder="Campaign name" value={c.name} onChange={(e) => set({ campaigns: b.campaigns.map((x, j) => j === i ? { ...x, name: e.target.value } : x) })} />
-                <input style={inputStyle} placeholder="/landing-page" value={c.landing_path} onChange={(e) => set({ campaigns: b.campaigns.map((x, j) => j === i ? { ...x, landing_path: e.target.value } : x) })} />
-                <input style={inputStyle} type="number" min={0} placeholder="Spend" value={c.monthly_spend} onChange={(e) => set({ campaigns: b.campaigns.map((x, j) => j === i ? { ...x, monthly_spend: parseFloat(e.target.value) || 0 } : x) })} />
-                <span className="muted" style={{ fontSize: 11, whiteSpace: "nowrap" }}>{sess} sess · ROAS {roas}</span>
-                <button className="btn ghost sm" type="button" onClick={() => set({ campaigns: b.campaigns.filter((_, j) => j !== i) })}><Icon name="x" size={12} /></button>
-              </div>
-            );
-          })}
-          {b.campaigns.length > 0 && <button className="btn sm primary" style={{ alignSelf: "flex-start" }} onClick={() => save()} disabled={saving} type="button">{saving ? "Saving…" : "Save campaigns"}</button>}
-        </div>
-      </div>
-
-      {/* Competitors */}
-      <div className="card">
-        <div className="card-head"><h3><Icon name="shield" size={14} /> Competitor benchmarks</h3>
-          <button className="btn sm ghost" style={{ marginLeft: "auto" }} type="button" onClick={() => set({ competitors: [...b.competitors, { name: "", url: "" }] })}><Icon name="plus" size={12} /> Add</button>
-        </div>
-        <div className="card-pad" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {b.competitors.length === 0 && <div className="muted" style={{ fontSize: 12 }}>Add competitor sites to benchmark their Google PageSpeed performance against this client (yours: {site.perf ?? "—"}/100).</div>}
-          {b.competitors.map((c, i) => (
-            <div key={i} style={{ display: "grid", gridTemplateColumns: "1.2fr 1.6fr auto auto auto", gap: 8, alignItems: "center" }}>
-              <input style={inputStyle} placeholder="Competitor name" value={c.name} onChange={(e) => set({ competitors: b.competitors.map((x, j) => j === i ? { ...x, name: e.target.value } : x) })} />
-              <input style={inputStyle} placeholder="https://competitor.com" value={c.url} onChange={(e) => set({ competitors: b.competitors.map((x, j) => j === i ? { ...x, url: e.target.value } : x) })} />
-              <span className="muted" style={{ fontSize: 11, whiteSpace: "nowrap" }}>
-                {c.performance != null ? `Perf ${c.performance} · SEO ${c.seo ?? "—"}` : "not benchmarked"}
-              </span>
-              <button className="btn ghost sm" type="button" disabled={benchIdx === i || !c.url} onClick={() => runBenchmark(i)}>{benchIdx === i ? "Running…" : "Benchmark"}</button>
-              <button className="btn ghost sm" type="button" onClick={() => save({ ...b, competitors: b.competitors.filter((_, j) => j !== i) })}><Icon name="x" size={12} /></button>
-            </div>
-          ))}
-          {b.competitors.length > 0 && <button className="btn sm primary" style={{ alignSelf: "flex-start" }} onClick={() => save()} disabled={saving} type="button">{saving ? "Saving…" : "Save competitors"}</button>}
-        </div>
-      </div>
-    </div>
   );
 };
 
@@ -3860,20 +3695,79 @@ interface PlaywrightCheck {
   checked_at: string;
 }
 
+type WatchtowerRunState = "idle" | "triggering" | "waiting" | "error";
+
 function HistoryTab({ site }: { site: Site }) {
   const [checks, setChecks] = useState<PlaywrightCheck[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeDevice, setActiveDevice] = useState("desktop");
   const [approvingId, setApprovingId] = useState<string | null>(null);
   const [approveSuccess, setApproveSuccess] = useState<string | null>(null);
+  const [runState, setRunState] = useState<WatchtowerRunState>("idle");
+  const [runError, setRunError] = useState<string | null>(null);
+  const [triggeredAt, setTriggeredAt] = useState<Date | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const fetchChecks = useCallback(async (): Promise<PlaywrightCheck[]> => {
+    try {
+      const r = await apiFetch(`/api/playwright/checks?siteId=${site.id}&limit=30`);
+      const data = await r.json();
+      const rows: PlaywrightCheck[] = data.checks || [];
+      setChecks(rows);
+      return rows;
+    } catch {
+      return [];
+    }
+  }, [site.id]);
 
   useEffect(() => {
-    apiFetch(`/api/playwright/checks?siteId=${site.id}&limit=30`)
-      .then((r) => r.json())
-      .then((data) => setChecks(data.checks || []))
-      .catch(() => setChecks([]))
-      .finally(() => setLoading(false));
-  }, [site.id]);
+    fetchChecks().finally(() => setLoading(false));
+  }, [fetchChecks]);
+
+  // Poll every 30 s after triggering; stop when new results land
+  useEffect(() => {
+    if (runState !== "waiting" || !triggeredAt) return;
+    pollRef.current = setInterval(async () => {
+      const fresh = await fetchChecks();
+      const hasNew = fresh.some(
+        (c) => new Date(c.checked_at) > triggeredAt
+      );
+      if (hasNew) {
+        clearInterval(pollRef.current!);
+        pollRef.current = null;
+        setRunState("idle");
+        setTriggeredAt(null);
+      }
+    }, 30_000);
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [runState, triggeredAt, fetchChecks]);
+
+  const handleRunWatchtower = async () => {
+    setRunState("triggering");
+    setRunError(null);
+    try {
+      const res = await apiFetch("/api/playwright/run", {
+        method: "POST",
+        body: JSON.stringify({ siteId: site.id, testForms: false }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) {
+        setRunState("error");
+        setRunError(data.error || "Failed to trigger Watchtower run. Check GITHUB_REPO and GITHUB_TOKEN env vars.");
+        return;
+      }
+      setTriggeredAt(new Date());
+      setRunState("waiting");
+    } catch {
+      setRunState("error");
+      setRunError("Could not reach the server. Try again.");
+    }
+  };
 
   const filtered = checks.filter((c) => c.device === activeDevice);
   const latest = filtered[0] || null;
@@ -3914,31 +3808,41 @@ function HistoryTab({ site }: { site: Site }) {
 
   if (checks.length === 0) {
     return (
-      <div className="card card-pad" style={{ textAlign: "center", padding: 48 }}>
-        <Icon name="eye" size={32} style={{ opacity: 0.2, marginBottom: 12 }} />
-        <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 8 }}>No Playwright checks yet</div>
-        <div className="muted" style={{ maxWidth: 420, margin: "0 auto" }}>
-          Run{" "}
-          <code
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: 12,
-              padding: "2px 6px",
-              background: "rgba(255,255,255,0.06)",
-              borderRadius: 4,
-            }}
-          >
-            npm run check:playwright
-          </code>{" "}
-          to start automated QA checks on this site. Results and screenshots will appear here.
+      <div className="card card-pad" style={{ textAlign: "center", padding: 56 }}>
+        <Icon name="eye" size={32} style={{ opacity: 0.2, marginBottom: 16 }} />
+        <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 8 }}>No Watchtower checks yet</div>
+        <div className="muted" style={{ maxWidth: 380, margin: "0 auto 24px" }}>
+          Run a Watchtower check to capture screenshots, detect visual regressions, and QA this site across desktop, tablet, and mobile.
         </div>
+        {runState === "error" && runError && (
+          <div style={{ color: "#FCA5A5", fontSize: 13, marginBottom: 16, maxWidth: 420, margin: "0 auto 16px" }}>
+            {runError}
+          </div>
+        )}
+        <button
+          className="btn primary"
+          onClick={handleRunWatchtower}
+          disabled={runState === "triggering" || runState === "waiting"}
+        >
+          <Icon name="refresh" size={13} />
+          {runState === "triggering"
+            ? "Queuing…"
+            : runState === "waiting"
+            ? "Running in GitHub Actions…"
+            : "Run Watchtower check"}
+        </button>
+        {runState === "waiting" && (
+          <div className="muted" style={{ fontSize: 12, marginTop: 12 }}>
+            Scanning now — usually takes 3–5 minutes. This page will refresh automatically when results arrive.
+          </div>
+        )}
       </div>
     );
   }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      {/* Device selector */}
+      {/* Toolbar — device picker + run button */}
       <div
         className="card"
         style={{ padding: "12px 18px", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}
@@ -3946,13 +3850,37 @@ function HistoryTab({ site }: { site: Site }) {
         <span className="label-strip">Device</span>
         <Tabs tabs={["desktop", "tablet", "mobile"]} active={activeDevice} onChange={setActiveDevice} />
         {latest && (
-          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <Badge tone={latest.status === "pass" ? "ok" : latest.status === "fail" ? "crit" : "high"}>
               Latest: {statusLabel(latest.status)}
             </Badge>
             <span className="label-strip">{new Date(latest.checked_at).toLocaleString()}</span>
           </div>
         )}
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+          {runState === "error" && runError && (
+            <span style={{ fontSize: 12, color: "#FCA5A5", maxWidth: 280 }}>{runError}</span>
+          )}
+          {runState === "waiting" && (
+            <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
+              Running in GitHub Actions — checking for results every 30 s…
+            </span>
+          )}
+          <button
+            className="btn"
+            onClick={handleRunWatchtower}
+            disabled={runState === "triggering" || runState === "waiting"}
+            type="button"
+            style={{ whiteSpace: "nowrap" }}
+          >
+            <Icon name="refresh" size={13} />
+            {runState === "triggering"
+              ? "Queuing…"
+              : runState === "waiting"
+              ? "Running…"
+              : "Run Watchtower"}
+          </button>
+        </div>
       </div>
 
       {latest && (

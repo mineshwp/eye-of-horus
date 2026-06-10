@@ -66,11 +66,12 @@ export async function fetchGSCMetrics(
   try {
     const dateRange = { startDate, endDate };
 
-    // Top queries
+    // Top queries — pull a deep list so page-2 (striking-distance) keywords,
+    // which have low clicks and sit far down the default ordering, are captured.
     const queriesRes = await searchAnalytics(siteUrl, token, {
       ...dateRange,
       dimensions: ['query'],
-      rowLimit: 50,
+      rowLimit: 500,
     });
 
     // Top pages
@@ -107,9 +108,11 @@ export async function fetchGSCMetrics(
       ...rowMetrics(r),
     }));
 
-    // Striking distance: positions 11–20 with decent impressions
+    // Striking distance: positions 11–20 (page 2). A low impressions floor keeps
+    // out pure noise (1–2 impressions) without excluding genuine opportunities on
+    // lower-traffic sites — the previous >=100 floor returned nothing for them.
     const strikingDistance = allQueries
-      .filter((q) => q.position >= 11 && q.position <= 20 && q.impressions >= 100)
+      .filter((q) => q.position >= 11 && q.position <= 20 && q.impressions >= 10)
       .sort((a, b) => b.impressions - a.impressions)
       .slice(0, 10);
 
